@@ -1,0 +1,474 @@
+st.title("Macro Analytical Dashboard")
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+# =========================================================
+# UI
+# =========================================================
+st.set_page_config(page_title="ABBank Executive Explainable Dashboard", layout="wide")
+st.title("🏦 ABBank Executive Explainable Macro & Treasury Dashboard")
+st.caption("Dashboard dài và chi tiết hơn: kết hợp forecast, giải thích driver, backtest, regime, chiến lược thị trường 1/2 và narrative cho CEO")
+st.markdown("---")
+
+# =========================================================
+# SIDEBAR
+# =========================================================
+st.sidebar.header("⚙️ Trung tâm dữ liệu")
+uploaded_file = st.sidebar.file_uploader("Upload data_vimo_abbank.xlsx", type=["xlsx"])
+forecast_horizon = st.sidebar.selectbox("Forecast horizon (months)", [1, 3, 6], index=1)
+backtest_points = st.sidebar.slider("Backtest points", 6, 36, 12)
+show_tail = st.sidebar.slider("Rows to preview", 5, 30, 10)
+run_button = st.sidebar.button("🚀 Run Executive Analysis")
+
+# =========================================================
+# HELPERS
+# =========================================================
+def preprocess(df):
+    df = df.copy()
+    df.columns = [c.strip() for c in df.columns]
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date').reset_index(drop=True)
+
+    for c in df.columns:
+        if c != 'date':
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+
+    df = df.ffill().bfill()
+
+    if 'vibor_on' not in df.columns:
+        raise ValueError("Thiếu cột vibor_on")
+    if 'usd_vnd' not in df.columns:
+        raise ValueError("Thiếu cột usd_vnd")
+
+    # Dùng EMA để tạo trend ổn định, tránh phụ thuộc statsmodels
+    df['ir_trend'] = df['vibor_on'].ewm(span=6, adjust=False).mean()
+    df['fx_trend'] = df['usd_vnd'].ewm(span=6, adjust=False).mean()
+
+    # Một số feature kỹ thuật đơn giản để dashboard phong phú hơn
+    df['fx_mom_1m'] = df['usd_vnd'].pct_change(1) * 100
+    df['fx_mom_3m'] = df['usd_vnd'].pct_change(3) * 100
+    df['ir_chg_1m'] = df['vibor_on'].diff(1)
+    df['ir_chg_3m'] = df['vibor_on'].diff(3)
+
+    return df.ffill().bfill()
+
+
+def detect_features(df):
+    excluded = ['date', 'usd_vnd', 'vibor_on', 'fx_trend', 'ir_trend']
+    features = [c for c in df.columns if c not in excluded]
+    return features
+
+
+def build_data(df, target, features, horizon):
+    work = df[['date', target] + features].copy()
+
+    for f in features:
+        work[f + '_lag1'] = work[f].shift(1)
+        work[f + '_chg1'] = work[f].diff(1)
+
+    work['target_future'] = work[target].shift(-horizon)
+    work = work.dropna().reset_index(drop=True)
+
+    model_cols = [c for c in work.columns if c not in ['date', target, 'target_future']]
+    X = work[model_cols]
+    y = work['target_future']
+    meta = work[['date', target, 'target_future']].copy()
+    return X, y, meta, model_cols
+
+
+def train_forecast(df, target, features, horizon):
+    X, y, meta, model_cols = build_data(df, target, features, horizon)
+    if len(X) < 24:
+        return None
+
+    scaler = StandardScaler()
+    Xs = scaler.fit_transform(X)
+
+    model = Ridge(alpha=1.0)
+    model.fit(Xs, y)
+
+    X_last = X.iloc[[-1]]
+    X_last_s = scaler.transform(X_last)
+    forecast = model.predict(X_last_s)[0]
+
+    contrib_raw = pd.Series(model.coef_ * X_last_s[0], index=model_cols)
+    grouped = {}
+    for idx, val in contrib_raw.items():
+        base = idx.replace('_lag1', '').replace('_chg1', '')
+        grouped[base] = grouped.get(base, 0.0) + float(val)
+    contrib = pd.Series(grouped).sort_values(key=lambda s: np.abs(s), ascending=False)
+
+    coef = pd.Series(model.coef_, index=model_cols).sort_values(key=lambda s: np.abs(s), ascending=False)
+    last_value = float(df[target].iloc[-1])
+
+    return {
+        'forecast': float(forecast),
+        'last_value': last_value,
+        'delta': float(forecast - last_value),
+        'contrib': contrib,
+        'coef': coef,
+        'model': model,
+        'scaler': scaler,
+        'X': X,
+        'y': y,
+        'meta': meta,
+        'model_cols': model_cols
+    }
+
+
+def rolling_backtest(df, target, features, horizon, n_points=12):
+    X, y, meta, model_cols = build_data(df, target, features, horizon)
+    if len(X) < max(24, n_points + 6):
+        return None
+
+    preds, actuals, dates = [], [], []
+    start = max(24, len(X) - n_points)
+
+    for i in range(start, len(X)):
+        X_train = X.iloc[:i]
+        y_train = y.iloc[:i]
+        X_test = X.iloc[[i]]
+
+        scaler = StandardScaler()
+        X_train_s = scaler.fit_transform(X_train)
+        X_test_s = scaler.transform(X_test)
+
+        model = Ridge(alpha=1.0)
+        model.fit(X_train_s, y_train)
+        pred = model.predict(X_test_s)[0]
+
+        preds.append(pred)
+        actuals.append(float(y.iloc[i]))
+        dates.append(meta.iloc[i]['date'])
+
+    bt = pd.DataFrame({'date': dates, 'actual': actuals, 'pred': preds})
+    bt['error'] = bt['pred'] - bt['actual']
+    bt['abs_pct_error'] = np.where(bt['actual'] != 0, np.abs(bt['error'] / bt['actual']) * 100, np.nan)
+    return bt
+
+
+def summarize_backtest(bt):
+    mae = mean_absolute_error(bt['actual'], bt['pred'])
+    rmse = np.sqrt(mean_squared_error(bt['actual'], bt['pred']))
+    mape = np.nanmean(bt['abs_pct_error'])
+    hit = (np.sign(bt['actual'].diff().fillna(0)) == np.sign(bt['pred'].diff().fillna(0))).mean() * 100
+    return mae, rmse, mape, hit
+
+
+def regime_signal(series):
+    s = series.dropna()
+    latest = float(s.iloc[-1])
+    mean = float(s.mean())
+    std = float(s.std()) if float(s.std()) != 0 else 1e-9
+    z = (latest - mean) / std
+    pct = float(s.rank(pct=True).iloc[-1] * 100)
+    return latest, mean, z, pct
+
+
+def top_driver_text(contrib, label):
+    pos = contrib[contrib > 0].head(3)
+    neg = contrib[contrib < 0].head(3)
+    out = []
+    if len(pos) > 0:
+        out.append(f"Các biến đang kéo {label} tăng: " + ", ".join([f"{k} ({v:+.2f})" for k, v in pos.items()]) + ".")
+    if len(neg) > 0:
+        out.append(f"Các biến đang ghìm {label} xuống: " + ", ".join([f"{k} ({v:+.2f})" for k, v in neg.items()]) + ".")
+    if not out:
+        out.append(f"Chưa có driver đủ nổi bật cho {label}.")
+    return " ".join(out)
+
+
+def plot_series_with_forecast(df, raw_col, trend_col, forecast_value, horizon, title):
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    hist = df.tail(18)
+    ax.plot(hist['date'], hist[raw_col], marker='o', linewidth=2, label='Actual')
+    ax.plot(hist['date'], hist[trend_col], linestyle='--', linewidth=2, label='Trend')
+    future_date = hist['date'].iloc[-1] + pd.DateOffset(months=horizon)
+    ax.plot([hist['date'].iloc[-1], future_date], [hist[trend_col].iloc[-1], forecast_value], linestyle=':', marker='o', linewidth=2, label='Forecast')
+    ax.set_title(title)
+    ax.grid(alpha=0.3)
+    ax.legend()
+    return fig
+
+
+def plot_contrib(contrib, title, n=10):
+    show = contrib.head(n).sort_values()
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.barh(show.index, show.values)
+    ax.set_title(title)
+    ax.grid(axis='x', alpha=0.3)
+    return fig
+
+
+def plot_backtest(bt, title):
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    ax.plot(bt['date'], bt['actual'], marker='o', linewidth=2, label='Actual')
+    ax.plot(bt['date'], bt['pred'], marker='o', linestyle='--', linewidth=2, label='Pred')
+    ax.set_title(title)
+    ax.grid(alpha=0.3)
+    ax.legend()
+    return fig
+
+
+def safe_get(df, col):
+    return col in df.columns
+
+
+def scenario_analysis(base_df, target, features, horizon, shocks):
+    temp = base_df.copy()
+    last_idx = temp.index[-1]
+    for col, shock in shocks.items():
+        if col in temp.columns:
+            temp.loc[last_idx, col] = temp.loc[last_idx, col] + shock
+    res = train_forecast(temp, target, features, horizon)
+    return res['forecast'] if res is not None else np.nan
+
+# =========================================================
+# MAIN
+# =========================================================
+if uploaded_file is not None:
+    raw = pd.read_excel(uploaded_file)
+    df = preprocess(raw)
+    features = detect_features(df)
+
+    st.subheader("1) Snapshot dữ liệu đầu vào")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Số quan sát", len(df))
+    c2.metric("Ngày đầu", df['date'].min().strftime('%Y-%m-%d'))
+    c3.metric("Ngày cuối", df['date'].max().strftime('%Y-%m-%d'))
+    c4.metric("Số biến giải thích", len(features))
+    st.dataframe(df.tail(show_tail), use_container_width=True)
+
+    if run_button:
+        fx_res = train_forecast(df, 'fx_trend', features, forecast_horizon)
+        ir_res = train_forecast(df, 'ir_trend', features, forecast_horizon)
+        bt_fx = rolling_backtest(df, 'fx_trend', features, forecast_horizon, backtest_points)
+        bt_ir = rolling_backtest(df, 'ir_trend', features, forecast_horizon, backtest_points)
+
+        if fx_res is None or ir_res is None:
+            st.error("Dữ liệu hiện quá ngắn. Sau khi tạo lag và horizon, bạn nên có tối thiểu khoảng 24 quan sát hữu ích.")
+        else:
+            tabs = st.tabs([
+                "🎯 Executive summary",
+                "💵 FX overview",
+                "📈 IR overview",
+                "🔍 FX explain",
+                "🧠 IR explain",
+                "🧪 Backtest",
+                "📊 Market regime",
+                "🧭 Strategy market 1 & 2",
+                "🌪️ Scenario analysis",
+                "📋 CEO note"
+            ])
+
+            with tabs[0]:
+                st.subheader("Kết quả điều hành tổng thể")
+                a, b, c, d = st.columns(4)
+                a.metric("FX trend forecast", f"{fx_res['forecast']:,.0f}", f"{fx_res['delta']:+,.0f}")
+                b.metric("IR trend forecast", f"{ir_res['forecast']:.2f}%", f"{ir_res['delta']:+.2f}đ")
+                c.metric("USD/VND current", f"{df['usd_vnd'].iloc[-1]:,.0f}")
+                d.metric("VIBOR ON current", f"{df['vibor_on'].iloc[-1]:.2f}%")
+
+                lcol, rcol = st.columns(2)
+                with lcol:
+                    st.pyplot(plot_series_with_forecast(df, 'usd_vnd', 'fx_trend', fx_res['forecast'], forecast_horizon, 'Lộ trình tỷ giá'))
+                with rcol:
+                    st.pyplot(plot_series_with_forecast(df, 'vibor_on', 'ir_trend', ir_res['forecast'], forecast_horizon, 'Lộ trình lãi suất'))
+
+                st.markdown("### Tóm tắt diễn biến gần đây")
+                d1, d2, d3, d4 = st.columns(4)
+                d1.metric("FX 1M change", f"{df['fx_mom_1m'].iloc[-1]:+.2f}%")
+                d2.metric("FX 3M change", f"{df['fx_mom_3m'].iloc[-1]:+.2f}%")
+                d3.metric("IR 1M change", f"{df['ir_chg_1m'].iloc[-1]:+.2f}đ")
+                d4.metric("IR 3M change", f"{df['ir_chg_3m'].iloc[-1]:+.2f}đ")
+
+                st.info("Trang này giữ tinh thần dashboard cũ: nhìn nhanh được bức tranh tổng thể, mức hiện tại, hướng dự báo và biến động gần đây. Các tab sau sẽ giải thích sâu hơn vì sao forecast đi như vậy.")
+
+            with tabs[1]:
+                st.subheader("Tổng quan tỷ giá")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.pyplot(plot_series_with_forecast(df, 'usd_vnd', 'fx_trend', fx_res['forecast'], forecast_horizon, 'USD/VND actual vs trend vs forecast'))
+                with c2:
+                    st.pyplot(plot_contrib(fx_res['contrib'], 'Top FX drivers', 10))
+
+                st.markdown("### Diễn giải nhanh")
+                st.write(top_driver_text(fx_res['contrib'], 'tỷ giá'))
+                st.write("Forecast FX ở đây không chỉ phản ánh quán tính của tỷ giá, mà còn hấp thụ các biến vĩ mô và thay đổi ngắn hạn của chúng. Vì vậy, nếu DXY, lợi suất Mỹ, vàng, thanh khoản hoặc các biến ngoại thương thay đổi mạnh, forecast sẽ đổi theo.")
+
+                st.markdown("### Hệ số nhạy cảm")
+                st.dataframe(fx_res['coef'].head(15).rename('coefficient').to_frame(), use_container_width=True)
+
+            with tabs[2]:
+                st.subheader("Tổng quan lãi suất")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.pyplot(plot_series_with_forecast(df, 'vibor_on', 'ir_trend', ir_res['forecast'], forecast_horizon, 'VIBOR ON actual vs trend vs forecast'))
+                with c2:
+                    st.pyplot(plot_contrib(ir_res['contrib'], 'Top IR drivers', 10))
+
+                st.markdown("### Diễn giải nhanh")
+                st.write(top_driver_text(ir_res['contrib'], 'lãi suất'))
+                st.write("Lãi suất ngắn hạn thường nhạy hơn với thanh khoản hệ thống, OMO, áp lực tỷ giá, chênh lệch lãi suất quốc tế và lạm phát. Tab này giữ tinh thần dashboard cũ nhưng bổ sung hẳn phần giải thích định lượng.")
+
+                st.markdown("### Hệ số nhạy cảm")
+                st.dataframe(ir_res['coef'].head(15).rename('coefficient').to_frame(), use_container_width=True)
+
+            with tabs[3]:
+                st.subheader("Giải thích sâu cho forecast tỷ giá")
+                left, right = st.columns([1, 1])
+                with left:
+                    st.pyplot(plot_contrib(fx_res['contrib'], 'Driver contribution into FX forecast', 12))
+                with right:
+                    st.markdown("### Vì sao ra kết quả này?")
+                    st.write(top_driver_text(fx_res['contrib'], 'tỷ giá'))
+                    st.write("Bạn nên đọc contribution theo logic sau: cột dương là các biến đang đẩy forecast tỷ giá lên; cột âm là các biến đang kéo forecast xuống. Độ lớn cho biết biến nào đang chi phối mạnh hơn ở thời điểm hiện tại.")
+                    st.write("Điểm mạnh của cách hiển thị này là người dùng có thể giải thích forecast với CEO hoặc Treasury mà không cần nói về mô hình phức tạp phía sau.")
+
+                st.markdown("### Phần cần chú ý khi ra quyết định")
+                st.write("- Nếu tỷ giá forecast tăng nhưng đang ở percentile lịch sử rất cao, nên cảnh giác với rủi ro overreaction.")
+                st.write("- Nếu contribution tập trung vào 1–2 biến duy nhất, forecast dễ nhạy với nhiễu dữ liệu ở chính các biến đó.")
+                st.write("- Nếu backtest gần đây xấu đi, nên dùng forecast như tín hiệu định hướng chứ chưa nên dùng để mở vị thế lớn.")
+
+            with tabs[4]:
+                st.subheader("Giải thích sâu cho forecast lãi suất")
+                left, right = st.columns([1, 1])
+                with left:
+                    st.pyplot(plot_contrib(ir_res['contrib'], 'Driver contribution into IR forecast', 12))
+                with right:
+                    st.markdown("### Vì sao ra kết quả này?")
+                    st.write(top_driver_text(ir_res['contrib'], 'lãi suất'))
+                    st.write("Khi contribution nghiêng mạnh về các biến thanh khoản và rate quốc tế, đó là tín hiệu forecast lãi suất đang được dẫn dắt bởi áp lực funding và external rates nhiều hơn là yếu tố tăng trưởng nội địa.")
+                    st.write("Ngược lại, khi các biến CPI, hoạt động kinh tế hoặc seasonal dummy có vai trò lớn hơn, forecast phản ánh nhiều hơn xu hướng nội tại của nền kinh tế.")
+
+                st.markdown("### Cách dùng cho Treasury")
+                st.write("- Forecast IR tăng: hạn chế kéo duration quá dài, quản trị cost of fund thận trọng hơn.")
+                st.write("- Forecast IR giảm hoặc ổn định: có thể cân nhắc mở duration chọn lọc, tối ưu carry trên danh mục đầu tư.")
+
+            with tabs[5]:
+                st.subheader("Backtest và độ tin cậy")
+                c1, c2 = st.columns(2)
+                with c1:
+                    if bt_fx is not None:
+                        st.pyplot(plot_backtest(bt_fx, 'FX backtest'))
+                        mae, rmse, mape, hit = summarize_backtest(bt_fx)
+                        r1, r2, r3, r4 = st.columns(4)
+                        r1.metric('MAE FX', f'{mae:,.2f}')
+                        r2.metric('RMSE FX', f'{rmse:,.2f}')
+                        r3.metric('MAPE FX', f'{mape:.2f}%')
+                        r4.metric('Hit Ratio FX', f'{hit:.1f}%')
+                with c2:
+                    if bt_ir is not None:
+                        st.pyplot(plot_backtest(bt_ir, 'IR backtest'))
+                        mae, rmse, mape, hit = summarize_backtest(bt_ir)
+                        r1, r2, r3, r4 = st.columns(4)
+                        r1.metric('MAE IR', f'{mae:,.2f}')
+                        r2.metric('RMSE IR', f'{rmse:,.2f}')
+                        r3.metric('MAPE IR', f'{mape:.2f}%')
+                        r4.metric('Hit Ratio IR', f'{hit:.1f}%')
+
+                st.warning("Backtest là phần rất quan trọng để dashboard dài hơn nhưng vẫn hữu ích: thay vì chỉ nhìn chart đẹp, người dùng biết luôn mô hình đã từng đúng tới mức nào trong các kỳ gần đây.")
+
+            with tabs[6]:
+                st.subheader("Market regime")
+                fx_latest, fx_mean, fx_z, fx_pct = regime_signal(df['usd_vnd'])
+                ir_latest, ir_mean, ir_z, ir_pct = regime_signal(df['vibor_on'])
+                a, b, c, d = st.columns(4)
+                a.metric('FX vs mean', f'{fx_latest:,.0f}', f'z={fx_z:.2f}')
+                b.metric('FX percentile', f'{fx_pct:.1f}%')
+                c.metric('IR vs mean', f'{ir_latest:.2f}%', f'z={ir_z:.2f}')
+                d.metric('IR percentile', f'{ir_pct:.1f}%')
+
+                st.markdown("### Cách đọc")
+                st.write("- Percentile cao nghĩa là biến đang ở vùng lịch sử tương đối cao; rủi ro mean reversion tăng lên.")
+                st.write("- Z-score giúp bạn biết thị trường đang chỉ hơi căng, căng vừa hay căng mạnh.")
+                st.write("- Khi kết hợp forecast với regime, quyết định sẽ thực tế hơn nhiều so với chỉ nhìn hướng tăng/giảm đơn thuần.")
+
+            with tabs[7]:
+                st.subheader("Hàm ý chiến lược cho thị trường 1 và thị trường 2")
+                m1, m2 = st.columns(2)
+                with m1:
+                    st.info("**Thị trường 1 – Lending / Funding / Balance Sheet**")
+                    if ir_res['delta'] > 0.15:
+                        st.write("- Lãi suất có xu hướng tăng: ưu tiên bảo vệ NIM, kiểm soát repricing gap và kéo dài kỳ hạn huy động chọn lọc.")
+                    else:
+                        st.write("- Lãi suất chưa tăng mạnh: có thể linh hoạt hơn trong pricing tín dụng và tối ưu tăng trưởng tài sản sinh lãi.")
+                    if fx_res['delta'] > 80:
+                        st.write("- Tỷ giá dự báo tăng: rà soát khách hàng nhập khẩu, khách hàng vay ngoại tệ và áp lực chuyển dịch sang VND funding.")
+                    else:
+                        st.write("- Tỷ giá không quá căng: áp lực lên khách hàng ngoại tệ và nhu cầu hedge có thể ở mức vừa phải hơn.")
+
+                with m2:
+                    st.warning("**Thị trường 2 – Treasury / Investment Book / FX**")
+                    if fx_res['delta'] > 80:
+                        st.write("- Nghiêng về trạng thái FX phòng thủ hơn; ưu tiên hedge ngắn hạn thay vì mở vị thế directional lớn.")
+                    else:
+                        st.write("- FX chưa quá căng: tập trung vào tối ưu carry và vốn VND.")
+                    if ir_res['delta'] > 0.15:
+                        st.write("- Hạn chế kéo duration quá dài; cẩn trọng với P&L mark-to-market trên sổ đầu tư.")
+                    else:
+                        st.write("- Có thể cân nhắc mở duration chọn lọc khi lợi suất ổn định hơn và funding bớt áp lực.")
+
+                st.markdown("### Góc nhìn điều hành")
+                st.write("Tab này khôi phục đúng tinh thần dashboard trước của bạn: forecast phải chuyển hóa thành hành động cụ thể cho market 1 và market 2, chứ không dừng ở việc dự báo thuần túy.")
+
+            with tabs[8]:
+                st.subheader("Scenario analysis")
+                shock_sets = {
+                    'Base': {},
+                    'DXY +1': {'dxy_index': 1.0} if safe_get(df, 'dxy_index') else {},
+                    'US10Y +0.25': {'us_10y_yield': 0.25} if safe_get(df, 'us_10y_yield') else {},
+                    'Fed +0.25': {'fed_rate': 0.25} if safe_get(df, 'fed_rate') else {},
+                    'OMO +1000': {'omo_outstanding': 1000.0} if safe_get(df, 'omo_outstanding') else {},
+                    'Gold +50': {'gold_price': 50.0} if safe_get(df, 'gold_price') else {}
+                }
+
+                rows = []
+                for name, shocks in shock_sets.items():
+                    fx_val = scenario_analysis(df, 'fx_trend', features, forecast_horizon, shocks)
+                    ir_val = scenario_analysis(df, 'ir_trend', features, forecast_horizon, shocks)
+                    rows.append({'Scenario': name, 'FX Forecast': fx_val, 'IR Forecast': ir_val})
+                scen = pd.DataFrame(rows)
+                st.dataframe(scen, use_container_width=True)
+                st.caption("Scenario analysis giúp dashboard dài hơn và hữu ích hơn: bạn không chỉ biết forecast cơ sở mà còn biết forecast nhạy ra sao khi một số driver chính bị shock.")
+
+            with tabs[9]:
+                st.subheader("CEO narrative")
+                fx_text = top_driver_text(fx_res['contrib'], 'tỷ giá')
+                ir_text = top_driver_text(ir_res['contrib'], 'lãi suất')
+                note = f"""
+**1. Kết quả chính**
+- Sau {forecast_horizon} tháng, hệ thống dự báo xu hướng tỷ giá ở mức **{fx_res['forecast']:,.0f}** và xu hướng lãi suất qua đêm ở mức **{ir_res['forecast']:.2f}%**.
+- So với trend hiện tại, tỷ giá thay đổi **{fx_res['delta']:+,.0f}** và lãi suất thay đổi **{ir_res['delta']:+.2f} điểm**.
+
+**2. Vì sao có kết quả này**
+- Với tỷ giá: {fx_text}
+- Với lãi suất: {ir_text}
+
+**3. Mức độ tin cậy**
+- Dashboard đi kèm backtest để đánh giá độ phù hợp của mô hình trong các kỳ gần đây. Khi sai số cao hoặc hit ratio thấp, forecast nên được dùng như tín hiệu định hướng thay vì tín hiệu giao dịch cứng.
+
+**4. Hàm ý điều hành**
+- Nếu lãi suất tăng, cần ưu tiên bảo vệ NIM, quản trị funding và duration thận trọng hơn.
+- Nếu tỷ giá tăng, cần tăng cường quản trị trạng thái ngoại tệ và rà soát nhóm khách hàng nhạy cảm với nhập khẩu / vay ngoại tệ.
+- Nếu regime đã ở vùng lịch sử rất cao, cần thận trọng với khả năng đảo chiều ngắn hạn.
+
+**5. Cách đọc dashboard**
+- Executive summary: nhìn nhanh mức hiện tại, forecast và biến động gần đây.
+- FX / IR overview: nhìn từng thị trường riêng biệt.
+- Explain tabs: xem driver nào đang kéo forecast lên / xuống.
+- Backtest: kiểm tra forecast có đáng tin không.
+- Regime: hiểu thị trường đang căng tới mức nào so với lịch sử.
+- Strategy tab: chuyển forecast thành hành động cho market 1 và market 2.
+- Scenario tab: xem forecast nhạy thế nào khi biến chính bị shock.
+"""
+                st.markdown(note)
+
+else:
+    st.info("Hãy upload file dữ liệu để bắt đầu. Tối thiểu nên có các cột: date, usd_vnd, vibor_on; càng nhiều biến vĩ mô thì dashboard càng giàu nội dung.")
