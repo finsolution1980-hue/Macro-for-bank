@@ -1,3 +1,5 @@
+import streamlit as st
+
 st.title("Macro Analytical Dashboard")
 
 import streamlit as st
