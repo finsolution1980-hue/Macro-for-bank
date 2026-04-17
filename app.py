@@ -1,32 +1,58 @@
 import streamlit as st
-
-st.title("Macro Analytical Dashboard")
-
-import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from streamlit_gsheets import GSheetsConnection
 
 # =========================================================
 # UI
 # =========================================================
-st.set_page_config(page_title="ABBank Executive Explainable Dashboard", layout="wide")
-st.title("🏦 ABBank Executive Explainable Macro & Treasury Dashboard")
-st.caption("Dashboard dài và chi tiết hơn: kết hợp forecast, giải thích driver, backtest, regime, chiến lược thị trường 1/2 và narrative cho CEO")
+st.set_page_config(page_title="Macro Analytical Dashboard For Bank - Author: Le Hoang Quan", layout="wide")
+st.title("🏦 Macro Analytical Dashboard For Bank - Author: Le Hoang Quan")
+st.caption("Dashboard kết hợp forecast, giải thích driver, backtest, regime, chiến lược thị trường 1 và thị trường 2")
 st.markdown("---")
 
 # =========================================================
 # SIDEBAR
 # =========================================================
 st.sidebar.header("⚙️ Trung tâm dữ liệu")
-uploaded_file = st.sidebar.file_uploader("Upload data_vimo_abbank.xlsx", type=["xlsx"])
+data_mode = st.sidebar.radio(
+    "Nguồn dữ liệu",
+    ["Tự động từ Google Sheets", "Upload file Excel"],
+    index=0
+)
 forecast_horizon = st.sidebar.selectbox("Forecast horizon (months)", [1, 3, 6], index=1)
 backtest_points = st.sidebar.slider("Backtest points", 6, 36, 12)
 show_tail = st.sidebar.slider("Rows to preview", 5, 30, 10)
 run_button = st.sidebar.button("🚀 Run Executive Analysis")
+
+if st.sidebar.button("🔄 Làm mới dữ liệu"):
+    st.cache_data.clear()
+    st.rerun()
+
+@st.cache_data(ttl=600)
+def load_data_from_gsheet():
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    return conn.read()
+
+raw = None
+if data_mode == "Tự động từ Google Sheets":
+    try:
+        raw = load_data_from_gsheet()
+        if raw is not None and len(raw) > 0:
+            st.sidebar.success("Đã kết nối Google Sheets")
+        else:
+            st.sidebar.warning("Google Sheets không trả về dữ liệu")
+    except Exception as e:
+        st.sidebar.error(f"Lỗi kết nối Google Sheets: {e}")
+else:
+    uploaded_file = st.sidebar.file_uploader("Upload macro_data.xlsx", type=["xlsx"])
+    if uploaded_file is not None:
+        raw = pd.read_excel(uploaded_file)
+        st.sidebar.success("Đã nạp file Excel")
 
 # =========================================================
 # HELPERS
@@ -234,8 +260,7 @@ def scenario_analysis(base_df, target, features, horizon, shocks):
 # =========================================================
 # MAIN
 # =========================================================
-if uploaded_file is not None:
-    raw = pd.read_excel(uploaded_file)
+if raw is not None and len(raw) > 0:
     df = preprocess(raw)
     features = detect_features(df)
 
@@ -254,7 +279,7 @@ if uploaded_file is not None:
         bt_ir = rolling_backtest(df, 'ir_trend', features, forecast_horizon, backtest_points)
 
         if fx_res is None or ir_res is None:
-            st.error("Dữ liệu hiện quá ngắn. Sau khi tạo lag và horizon, bạn nên có tối thiểu khoảng 24 quan sát hữu ích.")
+            st.error("Dữ liệu hiện quá ngắn. Sau khi tạo lag và horizon, cần có tối thiểu khoảng 24 quan sát hữu ích.")
         else:
             tabs = st.tabs([
                 "🎯 Executive summary",
@@ -290,10 +315,10 @@ if uploaded_file is not None:
                 d3.metric("IR 1M change", f"{df['ir_chg_1m'].iloc[-1]:+.2f}đ")
                 d4.metric("IR 3M change", f"{df['ir_chg_3m'].iloc[-1]:+.2f}đ")
 
-                st.info("Trang này giữ tinh thần dashboard cũ: nhìn nhanh được bức tranh tổng thể, mức hiện tại, hướng dự báo và biến động gần đây. Các tab sau sẽ giải thích sâu hơn vì sao forecast đi như vậy.")
+                st.info("Tab này giúp nắm bắt nhanh bức tranh tổng thể, mức hiện tại, hướng dự báo và các biến động gần đây. Các tab sau sẽ giải thích sâu hơn vì sao có kết quả dự báo như vậy.")
 
             with tabs[1]:
-                st.subheader("Tổng quan tỷ giá")
+                st.subheader("Tổng quan về tỷ giá")
                 c1, c2 = st.columns(2)
                 with c1:
                     st.pyplot(plot_series_with_forecast(df, 'usd_vnd', 'fx_trend', fx_res['forecast'], forecast_horizon, 'USD/VND actual vs trend vs forecast'))
@@ -302,13 +327,13 @@ if uploaded_file is not None:
 
                 st.markdown("### Diễn giải nhanh")
                 st.write(top_driver_text(fx_res['contrib'], 'tỷ giá'))
-                st.write("Forecast FX ở đây không chỉ phản ánh quán tính của tỷ giá, mà còn hấp thụ các biến vĩ mô và thay đổi ngắn hạn của chúng. Vì vậy, nếu DXY, lợi suất Mỹ, vàng, thanh khoản hoặc các biến ngoại thương thay đổi mạnh, forecast sẽ đổi theo.")
+                st.write("Forecast FX không chỉ phản ánh quán tính của tỷ giá, mà còn tính đến tác động của các biến vĩ mô khác và thay đổi ngắn hạn của chúng. Vì vậy, nếu DXY, lợi suất Mỹ, vàng, thanh khoản hoặc các biến ngoại thương thay đổi mạnh, dự báo sẽ đổi theo.")
 
-                st.markdown("### Hệ số nhạy cảm")
+                st.markdown("### Hệ số nhạy")
                 st.dataframe(fx_res['coef'].head(15).rename('coefficient').to_frame(), use_container_width=True)
 
             with tabs[2]:
-                st.subheader("Tổng quan lãi suất")
+                st.subheader("Tổng quan về lãi suất")
                 c1, c2 = st.columns(2)
                 with c1:
                     st.pyplot(plot_series_with_forecast(df, 'vibor_on', 'ir_trend', ir_res['forecast'], forecast_horizon, 'VIBOR ON actual vs trend vs forecast'))
@@ -317,41 +342,41 @@ if uploaded_file is not None:
 
                 st.markdown("### Diễn giải nhanh")
                 st.write(top_driver_text(ir_res['contrib'], 'lãi suất'))
-                st.write("Lãi suất ngắn hạn thường nhạy hơn với thanh khoản hệ thống, OMO, áp lực tỷ giá, chênh lệch lãi suất quốc tế và lạm phát. Tab này giữ tinh thần dashboard cũ nhưng bổ sung hẳn phần giải thích định lượng.")
+                st.write("Lãi suất ngắn hạn thường nhạy hơn với thanh khoản hệ thống, OMO, áp lực tỷ giá, chênh lệch lãi suất quốc tế và lạm phát.")
 
-                st.markdown("### Hệ số nhạy cảm")
+                st.markdown("### Hệ số nhạy")
                 st.dataframe(ir_res['coef'].head(15).rename('coefficient').to_frame(), use_container_width=True)
 
             with tabs[3]:
-                st.subheader("Giải thích sâu cho forecast tỷ giá")
+                st.subheader("Giải thích sâu cho dự báo tỷ giá")
                 left, right = st.columns([1, 1])
                 with left:
                     st.pyplot(plot_contrib(fx_res['contrib'], 'Driver contribution into FX forecast', 12))
                 with right:
                     st.markdown("### Vì sao ra kết quả này?")
                     st.write(top_driver_text(fx_res['contrib'], 'tỷ giá'))
-                    st.write("Bạn nên đọc contribution theo logic sau: cột dương là các biến đang đẩy forecast tỷ giá lên; cột âm là các biến đang kéo forecast xuống. Độ lớn cho biết biến nào đang chi phối mạnh hơn ở thời điểm hiện tại.")
-                    st.write("Điểm mạnh của cách hiển thị này là người dùng có thể giải thích forecast với CEO hoặc Treasury mà không cần nói về mô hình phức tạp phía sau.")
+                    st.write("Ghi chú: Cột dương là các biến đóng góp làm tăng; cột âm là các biến óng góp làm giảm.")
+                    st.write("Độ lớn cho biết biến nào đang chi phối mạnh hơn ở thời điểm hiện tại.")
 
-                st.markdown("### Phần cần chú ý khi ra quyết định")
-                st.write("- Nếu tỷ giá forecast tăng nhưng đang ở percentile lịch sử rất cao, nên cảnh giác với rủi ro overreaction.")
-                st.write("- Nếu contribution tập trung vào 1–2 biến duy nhất, forecast dễ nhạy với nhiễu dữ liệu ở chính các biến đó.")
-                st.write("- Nếu backtest gần đây xấu đi, nên dùng forecast như tín hiệu định hướng chứ chưa nên dùng để mở vị thế lớn.")
+                st.markdown("### Lưu ý khi ra quyết định:")
+                st.write("- Nếu tỷ giá dự báo tăng nhưng đang ở vùng rất cao so với lịch sử ==> nên cảnh giác với rủi ro mô hình phản ứng thái quá.")
+                st.write("- Nếu đồ thị tập trung vào 1 đến 2 biến duy nhất ==> dự báo rất dễ nhạy với nhiễu dữ liệu ở chính các biến đó.")
+                st.write("- Nếu backtest gần đây cho thấy độ chính xác giảm ==> nên dùng dự báo này như tín hiệu định hướng chứ chưa nên mở vị thế lớn.")
 
             with tabs[4]:
-                st.subheader("Giải thích sâu cho forecast lãi suất")
+                st.subheader("Giải thích sâu cho dự báo lãi suất")
                 left, right = st.columns([1, 1])
                 with left:
                     st.pyplot(plot_contrib(ir_res['contrib'], 'Driver contribution into IR forecast', 12))
                 with right:
-                    st.markdown("### Vì sao ra kết quả này?")
+                    st.markdown("### Giải thích kết quả dự báo:")
                     st.write(top_driver_text(ir_res['contrib'], 'lãi suất'))
-                    st.write("Khi contribution nghiêng mạnh về các biến thanh khoản và rate quốc tế, đó là tín hiệu forecast lãi suất đang được dẫn dắt bởi áp lực funding và external rates nhiều hơn là yếu tố tăng trưởng nội địa.")
-                    st.write("Ngược lại, khi các biến CPI, hoạt động kinh tế hoặc seasonal dummy có vai trò lớn hơn, forecast phản ánh nhiều hơn xu hướng nội tại của nền kinh tế.")
+                    st.write("Khi phân bố nghiêng mạnh về các biến thanh khoản và lãi suất quốc tế, đó là tín hiệu cho thấy lãi suất trong nước đang được dẫn dắt bởi áp lực về vốn và lãi suất bên ngoài nhiều hơn là yếu tố tăng trưởng nội địa.")
+                    st.write("Ngược lại, khi các biến CPI, hoạt động kinh tế hoặc biến giả (seasonal dummy) có vai trò lớn hơn, kết quả dự báo bị tác động nhiều hơn bởi các xu hướng nội tại của nền kinh tế.")
 
-                st.markdown("### Cách dùng cho Treasury")
-                st.write("- Forecast IR tăng: hạn chế kéo duration quá dài, quản trị cost of fund thận trọng hơn.")
-                st.write("- Forecast IR giảm hoặc ổn định: có thể cân nhắc mở duration chọn lọc, tối ưu carry trên danh mục đầu tư.")
+                st.markdown("### Cách sử dụng kết quả cho Treasury")
+                st.write("- Dự báo lãi suất (Forecast IR) tăng: hạn chế kéo kỳ hạn (duration) quá dài và cần quản trị giá vốn (cost of fund) thận trọng hơn.")
+                st.write("- Dự báo lãi suất (Forecast IR) giảm hoặc ổn định: có thể cân nhắc mở kỳ hạn (duration) chọn lọc, tối ưu carry trên danh mục đầu tư.")
 
             with tabs[5]:
                 st.subheader("Backtest và độ tin cậy")
@@ -375,7 +400,7 @@ if uploaded_file is not None:
                         r3.metric('MAPE IR', f'{mape:.2f}%')
                         r4.metric('Hit Ratio IR', f'{hit:.1f}%')
 
-                st.warning("Backtest là phần rất quan trọng để dashboard dài hơn nhưng vẫn hữu ích: thay vì chỉ nhìn chart đẹp, người dùng biết luôn mô hình đã từng đúng tới mức nào trong các kỳ gần đây.")
+                st.warning("Ghi chú: Backtest giúp đánh giá mức độ chính xác của mô hình khi so kết quả dự báo với dự liệu thật trong các kỳ gần đây.")
 
             with tabs[6]:
                 st.subheader("Market regime")
@@ -473,4 +498,4 @@ if uploaded_file is not None:
                 st.markdown(note)
 
 else:
-    st.info("Hãy upload file dữ liệu để bắt đầu. Tối thiểu nên có các cột: date, usd_vnd, vibor_on; càng nhiều biến vĩ mô thì dashboard càng giàu nội dung.")
+    st.info("Không có dữ liệu đầu vào. Có thể chọn chế độ tự động từ Google Sheets hoặc upload file Excel thủ công.")
