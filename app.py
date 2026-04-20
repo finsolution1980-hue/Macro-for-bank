@@ -385,7 +385,7 @@ if raw is not None and len(raw) > 0:
     c2.metric("Ngày đầu", df['date'].min().strftime('%Y-%m-%d'))
     c3.metric("Ngày cuối", df['date'].max().strftime('%Y-%m-%d'))
     c4.metric("Số biến giải thích", len(features))
-    st.dataframe(df.tail(preview_rows), use_container_width=True)
+    st.dataframe(df.tail(preview_rows), width="stretch")
 
     st.info("Dữ liệu đã được nạp. Dashboard đang chạy realtime và sẽ tự cập nhật khi thay đổi tham số, nguồn dữ liệu hoặc chế độ hiển thị.")
 
@@ -448,7 +448,7 @@ if raw is not None and len(raw) > 0:
                 st.write("Forecast FX không chỉ phản ánh quán tính của tỷ giá, mà còn tính đến tác động của các biến vĩ mô khác và thay đổi ngắn hạn của chúng. Vì vậy, nếu DXY, lợi suất Mỹ, vàng, thanh khoản hoặc các biến ngoại thương thay đổi mạnh, dự báo sẽ đổi theo.")
 
                 st.markdown("### Hệ số nhạy")
-                st.dataframe(fx_res['coef'].head(15).rename('coefficient').to_frame(), use_container_width=True)
+                st.dataframe(fx_res["coef"].head(15).rename("coefficient").to_frame(), width="stretch")
 
             with tabs[2]:
                 st.subheader("Tổng quan về lãi suất")
@@ -463,7 +463,7 @@ if raw is not None and len(raw) > 0:
                 st.write("Lãi suất ngắn hạn thường nhạy hơn với thanh khoản hệ thống, OMO, áp lực tỷ giá, chênh lệch lãi suất quốc tế và lạm phát.")
 
                 st.markdown("### Hệ số nhạy")
-                st.dataframe(ir_res['coef'].head(15).rename('coefficient').to_frame(), use_container_width=True)
+                st.dataframe(ir_res["coef"].head(15).rename("coefficient").to_frame(), width="stretch")
 
             with tabs[3]:
                 st.subheader("Giải thích sâu cho dự báo tỷ giá")
@@ -635,7 +635,7 @@ if raw is not None and len(raw) > 0:
 
                     c1, c2 = responsive_cols(2)
                     with c1:
-                        st.dataframe(bucket_df, use_container_width=True)
+                        st.dataframe(bucket_df, width="stretch")
                     with c2:
                         st.pyplot(plot_bucket_pnl(bucket_df, pnl_col))
 
@@ -663,7 +663,7 @@ if raw is not None and len(raw) > 0:
                     ir_val = scenario_analysis(df, 'ir_trend', features, forecast_horizon, shocks)
                     rows.append({'Scenario': name, 'FX Forecast': fx_val, 'IR Forecast': ir_val})
                 scen = pd.DataFrame(rows)
-                st.dataframe(scen, use_container_width=True, height=260 if mobile_mode else None)
+                st.dataframe(scen, width="stretch", height=260 if mobile_mode else "auto")
                 st.caption("Scenario analysis giúp dashboard dài hơn và hữu ích hơn: không chỉ thể hiện forecast cơ sở mà còn cho thấy mức độ nhạy của forecast khi các driver chính bị shock.")
 
             with tabs[10]:
