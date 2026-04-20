@@ -13,6 +13,7 @@ from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="Macro Analytical Dashboard For Bank - Author: Le Hoang Quan", layout="wide")
 st.title("🏦 Macro Analytical Dashboard For Bank - Author: Le Hoang Quan")
 st.caption("Dashboard kết hợp dự báo, giải thích các yếu tố tác động, backtest, regime, chiến lược thị trường 1 và thị trường 2")
+mobile_mode = st.toggle("📱 Mobile-friendly mode", value=False, help="Tối ưu bố cục cho màn hình điện thoại bằng cách chuyển các khối nhiều cột thành dạng xếp dọc.")
 st.markdown("---")
 
 # =========================================================
@@ -27,11 +28,12 @@ data_mode = st.sidebar.radio(
 forecast_horizon = st.sidebar.selectbox("Forecast horizon (months)", [1, 3, 6], index=1)
 backtest_points = st.sidebar.slider("Backtest points", 6, 36, 12)
 show_tail = st.sidebar.slider("Rows to preview", 5, 30, 10)
-run_button = st.sidebar.button("🚀 Run Executive Analysis")
-
 if st.sidebar.button("🔄 Làm mới dữ liệu"):
     st.cache_data.clear()
     st.rerun()
+
+if mobile_mode:
+    st.info("Chế độ mobile-friendly đang bật. Các khối số liệu và biểu đồ sẽ được xếp dọc để phù hợp hơn với màn hình điện thoại.")
 
 @st.cache_data(ttl=600)
 def load_data_from_gsheet():
@@ -57,6 +59,16 @@ else:
 # =========================================================
 # HELPERS
 # =========================================================
+def responsive_cols(n):
+    if mobile_mode:
+        return [st.container() for _ in range(n)]
+    return st.columns(n)
+
+def responsive_ratio(spec):
+    if mobile_mode:
+        return [st.container() for _ in range(len(spec))]
+    return st.columns(spec)
+
 def preprocess(df):
     df = df.copy()
     df.columns = [c.strip() for c in df.columns]
@@ -367,14 +379,17 @@ if raw is not None and len(raw) > 0:
     features = detect_features(df)
 
     st.subheader("1) Snapshot dữ liệu đầu vào")
-    c1, c2, c3, c4 = st.columns(4)
+    preview_rows = 5 if mobile_mode else show_tail
+    c1, c2, c3, c4 = responsive_cols(4)
     c1.metric("Số quan sát", len(df))
     c2.metric("Ngày đầu", df['date'].min().strftime('%Y-%m-%d'))
     c3.metric("Ngày cuối", df['date'].max().strftime('%Y-%m-%d'))
     c4.metric("Số biến giải thích", len(features))
-    st.dataframe(df.tail(show_tail), use_container_width=True)
+    st.dataframe(df.tail(preview_rows), use_container_width=True)
 
-    if run_button:
+    st.info("Dữ liệu đã được nạp. Dashboard đang chạy realtime và sẽ tự cập nhật khi thay đổi tham số, nguồn dữ liệu hoặc chế độ hiển thị.")
+
+    if True:
         fx_res = train_forecast(df, 'fx_trend', features, forecast_horizon)
         ir_res = train_forecast(df, 'ir_trend', features, forecast_horizon)
         bt_fx = rolling_backtest(df, 'fx_trend', features, forecast_horizon, backtest_points)
@@ -399,7 +414,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[0]:
                 st.subheader("Kết quả điều hành tổng thể")
-                a, b, c, d = st.columns(4)
+                a, b, c, d = responsive_cols(4)
                 a.metric("FX trend forecast", f"{fx_res['forecast']:,.0f}", f"{fx_res['delta']:+,.0f}")
                 b.metric("IR trend forecast", f"{ir_res['forecast']:.2f}%", f"{ir_res['delta']:+.2f}đ")
                 c.metric("USD/VND current", f"{df['usd_vnd'].iloc[-1]:,.0f}")
@@ -412,7 +427,7 @@ if raw is not None and len(raw) > 0:
                     st.pyplot(plot_series_with_forecast(df, 'vibor_on', 'ir_trend', ir_res['forecast'], forecast_horizon, 'Lộ trình lãi suất'))
 
                 st.markdown("### Tóm tắt diễn biến gần đây")
-                d1, d2, d3, d4 = st.columns(4)
+                d1, d2, d3, d4 = responsive_cols(4)
                 d1.metric("FX 1M change", f"{df['fx_mom_1m'].iloc[-1]:+.2f}%")
                 d2.metric("FX 3M change", f"{df['fx_mom_3m'].iloc[-1]:+.2f}%")
                 d3.metric("IR 1M change", f"{df['ir_chg_1m'].iloc[-1]:+.2f}đ")
@@ -422,7 +437,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[1]:
                 st.subheader("Tổng quan về tỷ giá")
-                c1, c2 = st.columns(2)
+                c1, c2 = responsive_cols(2)
                 with c1:
                     st.pyplot(plot_series_with_forecast(df, 'usd_vnd', 'fx_trend', fx_res['forecast'], forecast_horizon, 'USD/VND actual vs trend vs forecast'))
                 with c2:
@@ -437,7 +452,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[2]:
                 st.subheader("Tổng quan về lãi suất")
-                c1, c2 = st.columns(2)
+                c1, c2 = responsive_cols(2)
                 with c1:
                     st.pyplot(plot_series_with_forecast(df, 'vibor_on', 'ir_trend', ir_res['forecast'], forecast_horizon, 'VIBOR ON actual vs trend vs forecast'))
                 with c2:
@@ -452,7 +467,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[3]:
                 st.subheader("Giải thích sâu cho dự báo tỷ giá")
-                left, right = st.columns([1, 1])
+                left, right = responsive_ratio([1, 1])
                 with left:
                     st.pyplot(plot_contrib(fx_res['contrib'], 'Driver contribution into FX forecast', 12))
                 with right:
@@ -468,7 +483,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[4]:
                 st.subheader("Giải thích sâu cho dự báo lãi suất")
-                left, right = st.columns([1, 1])
+                left, right = responsive_ratio([1, 1])
                 with left:
                     st.pyplot(plot_contrib(ir_res['contrib'], 'Driver contribution into IR forecast', 12))
                 with right:
@@ -483,12 +498,12 @@ if raw is not None and len(raw) > 0:
 
             with tabs[5]:
                 st.subheader("Backtest và độ tin cậy")
-                c1, c2 = st.columns(2)
+                c1, c2 = responsive_cols(2)
                 with c1:
                     if bt_fx is not None:
                         st.pyplot(plot_backtest(bt_fx, 'FX backtest'))
                         mae, rmse, mape, hit = summarize_backtest(bt_fx)
-                        r1, r2, r3, r4 = st.columns(4)
+                        r1, r2, r3, r4 = responsive_cols(4)
                         r1.metric('MAE FX', f'{mae:,.2f}')
                         r2.metric('RMSE FX', f'{rmse:,.2f}')
                         r3.metric('MAPE FX', f'{mape:.2f}%')
@@ -497,7 +512,7 @@ if raw is not None and len(raw) > 0:
                     if bt_ir is not None:
                         st.pyplot(plot_backtest(bt_ir, 'IR backtest'))
                         mae, rmse, mape, hit = summarize_backtest(bt_ir)
-                        r1, r2, r3, r4 = st.columns(4)
+                        r1, r2, r3, r4 = responsive_cols(4)
                         r1.metric('MAE IR', f'{mae:,.2f}')
                         r2.metric('RMSE IR', f'{rmse:,.2f}')
                         r3.metric('MAPE IR', f'{mape:.2f}%')
@@ -509,7 +524,7 @@ if raw is not None and len(raw) > 0:
                 st.subheader("Market regime")
                 fx_latest, fx_mean, fx_z, fx_pct = regime_signal(df['usd_vnd'])
                 ir_latest, ir_mean, ir_z, ir_pct = regime_signal(df['vibor_on'])
-                a, b, c, d = st.columns(4)
+                a, b, c, d = responsive_cols(4)
                 a.metric('FX vs mean', f'{fx_latest:,.0f}', f'z={fx_z:.2f}')
                 b.metric('FX percentile', f'{fx_pct:.1f}%')
                 c.metric('IR vs mean', f'{ir_latest:.2f}%', f'z={ir_z:.2f}')
@@ -522,7 +537,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[7]:
                 st.subheader("Hàm ý chiến lược cho thị trường 1 và thị trường 2")
-                m1, m2 = st.columns(2)
+                m1, m2 = responsive_cols(2)
                 with m1:
                     st.info("**Thị trường 1 – Lending / Funding / Balance Sheet**")
                     if ir_res['delta'] > 0.15:
@@ -550,9 +565,11 @@ if raw is not None and len(raw) > 0:
 
             with tabs[8]:
                 st.subheader("Duration risk module")
+                if mobile_mode:
+                    st.caption("Chế độ mobile hiển thị theo dạng xếp dọc để dễ theo dõi trên điện thoại.")
                 st.write("Module này lượng hóa mức độ nhạy cảm của danh mục đầu tư đối với biến động lãi suất, bao gồm modified duration, DV01, stress loss, phân bổ duration bucket và tác động lên danh mục chuẩn 50.000 tỷ VND.")
 
-                dcol1, dcol2, dcol3 = st.columns(3)
+                dcol1, dcol2, dcol3 = responsive_cols(3)
                 with dcol1:
                     portfolio_value = st.number_input("Quy mô danh mục (tỷ VND)", min_value=100.0, value=50000.0, step=100.0)
                 with dcol2:
@@ -563,13 +580,13 @@ if raw is not None and len(raw) > 0:
                 price_change_pct, pnl = estimate_mtm_loss(portfolio_value, assumed_duration, shock_bps / 100.0)
                 dv01_total = estimate_dv01_billion_vnd(portfolio_value, assumed_duration)
 
-                m1, m2, m3, m4 = st.columns(4)
+                m1, m2, m3, m4 = responsive_cols(4)
                 m1.metric("Quy mô danh mục", f"{portfolio_value:,.0f} tỷ")
                 m2.metric("Modified duration", f"{assumed_duration:.1f} năm")
                 m3.metric("DV01 ước tính", f"{dv01_total:,.2f} tỷ / 1bp")
                 m4.metric("Stress P&L", f"{pnl:,.0f} tỷ")
 
-                l1, l2 = st.columns(2)
+                l1, l2 = responsive_cols(2)
                 with l1:
                     st.pyplot(plot_duration_price_sensitivity([1, 2, 3, 5, 7, 10], shock_bps))
                 with l2:
@@ -581,7 +598,7 @@ if raw is not None and len(raw) > 0:
                 st.markdown("### Duration bucket analysis")
                 st.write("Phần này mô phỏng cơ cấu danh mục 50.000 tỷ VND theo các bucket duration. Tỷ trọng có thể điều chỉnh để đánh giá mức độ tập trung rủi ro theo kỳ hạn.")
 
-                b1, b2, b3, b4 = st.columns(4)
+                b1, b2, b3, b4 = responsive_cols(4)
                 with b1:
                     w_short = st.slider("0–1 năm (%)", 0, 100, 25, 5) / 100
                 with b2:
@@ -611,12 +628,12 @@ if raw is not None and len(raw) > 0:
                     bucket_df = compute_bucket_metrics(portfolio_value, bucket_weights, bucket_durations, shock_bps)
                     pnl_col = f'P&L @ {shock_bps}bps (bn VND)'
 
-                    k1, k2, k3 = st.columns(3)
+                    k1, k2, k3 = responsive_cols(3)
                     k1.metric("Weighted avg duration", f"{wad:.2f} năm")
                     k2.metric("Tổng DV01 bucket", f"{bucket_df['DV01 (bn VND / 1bp)'].sum():,.2f} tỷ / 1bp")
                     k3.metric("Tổng stress loss", f"{bucket_df[pnl_col].sum():,.0f} tỷ")
 
-                    c1, c2 = st.columns(2)
+                    c1, c2 = responsive_cols(2)
                     with c1:
                         st.dataframe(bucket_df, use_container_width=True)
                     with c2:
@@ -646,7 +663,7 @@ if raw is not None and len(raw) > 0:
                     ir_val = scenario_analysis(df, 'ir_trend', features, forecast_horizon, shocks)
                     rows.append({'Scenario': name, 'FX Forecast': fx_val, 'IR Forecast': ir_val})
                 scen = pd.DataFrame(rows)
-                st.dataframe(scen, use_container_width=True)
+                st.dataframe(scen, use_container_width=True, height=260 if mobile_mode else None)
                 st.caption("Scenario analysis giúp dashboard dài hơn và hữu ích hơn: không chỉ thể hiện forecast cơ sở mà còn cho thấy mức độ nhạy của forecast khi các driver chính bị shock.")
 
             with tabs[10]:
