@@ -12,7 +12,7 @@ from streamlit_gsheets import GSheetsConnection
 # =========================================================
 st.set_page_config(page_title="Macro Analytical Dashboard For Bank - Author: Le Hoang Quan", layout="wide")
 st.title("🏦 Macro Analytical Dashboard For Bank - Author: Le Hoang Quan")
-st.caption("Dashboard kết hợp forecast, giải thích driver, backtest, regime, chiến lược thị trường 1 và thị trường 2")
+st.caption("Dashboard kết hợp dự báo, giải thích các yếu tố tác động, backtest, regime, chiến lược thị trường 1 và thị trường 2")
 st.markdown("---")
 
 # =========================================================
@@ -257,6 +257,108 @@ def scenario_analysis(base_df, target, features, horizon, shocks):
     res = train_forecast(temp, target, features, horizon)
     return res['forecast'] if res is not None else np.nan
 
+
+def estimate_price_change_from_duration(duration_years, rate_shock_pct):
+    return -duration_years * rate_shock_pct
+
+
+def estimate_mtm_loss(portfolio_value_billion_vnd, duration_years, rate_shock_pct):
+    price_change_pct = estimate_price_change_from_duration(duration_years, rate_shock_pct)
+    pnl_billion_vnd = portfolio_value_billion_vnd * price_change_pct / 100
+    return price_change_pct, pnl_billion_vnd
+
+
+def duration_risk_table(portfolio_value_billion_vnd, durations, shocks_bps):
+    rows = []
+    for duration in durations:
+        row = {'Duration (years)': duration}
+        for shock_bps in shocks_bps:
+            shock_pct = shock_bps / 100.0
+            price_change_pct, pnl = estimate_mtm_loss(portfolio_value_billion_vnd, duration, shock_pct)
+            row[f'{shock_bps}bps price change %'] = price_change_pct
+            row[f'{shock_bps}bps P&L (bn VND)'] = pnl
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def plot_duration_price_sensitivity(durations, shock_bps):
+    shock_pct = shock_bps / 100.0
+    changes = [estimate_price_change_from_duration(d, shock_pct) for d in durations]
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.bar([str(d) for d in durations], changes)
+    ax.set_title(f'Ước lượng thay đổi giá khi lãi suất tăng {shock_bps}bps')
+    ax.set_xlabel('Duration (năm)')
+    ax.set_ylabel('Price change (%)')
+    ax.grid(axis='y', alpha=0.3)
+    return fig
+
+
+def estimate_dv01_billion_vnd(portfolio_value_billion_vnd, duration_years):
+    market_value_vnd = portfolio_value_billion_vnd * 1_000_000_000
+    dv01_vnd = duration_years * market_value_vnd * 0.0001
+    return dv01_vnd / 1_000_000_000
+
+
+def compute_bucket_metrics(total_portfolio_billion_vnd, bucket_weights, bucket_durations, shock_bps):
+    rows = []
+    for bucket, weight in bucket_weights.items():
+        alloc = total_portfolio_billion_vnd * weight
+        dur = bucket_durations[bucket]
+        dv01 = estimate_dv01_billion_vnd(alloc, dur)
+        price_change_pct, pnl = estimate_mtm_loss(alloc, dur, shock_bps / 100.0)
+        rows.append({
+            'Bucket': bucket,
+            'Weight %': weight * 100,
+            'Allocated value (bn VND)': alloc,
+            'Duration (years)': dur,
+            'DV01 (bn VND / 1bp)': dv01,
+            f'Price change @ {shock_bps}bps (%)': price_change_pct,
+            f'P&L @ {shock_bps}bps (bn VND)': pnl
+        })
+    return pd.DataFrame(rows)
+
+
+def stress_loss_heatmap_df(total_portfolio_billion_vnd, duration_years_list, shock_bps_list):
+    data = {}
+    for shock_bps in shock_bps_list:
+        col_vals = []
+        for dur in duration_years_list:
+            _, pnl = estimate_mtm_loss(total_portfolio_billion_vnd, dur, shock_bps / 100.0)
+            col_vals.append(pnl)
+        data[f'{shock_bps}bps'] = col_vals
+    return pd.DataFrame(data, index=[f'{d}y' for d in duration_years_list])
+
+
+def plot_stress_loss_heatmap(df_heatmap):
+    fig, ax = plt.subplots(figsize=(8, 5))
+    im = ax.imshow(df_heatmap.values, aspect='auto')
+    ax.set_xticks(range(len(df_heatmap.columns)))
+    ax.set_xticklabels(df_heatmap.columns)
+    ax.set_yticks(range(len(df_heatmap.index)))
+    ax.set_yticklabels(df_heatmap.index)
+    ax.set_title('Heatmap stress loss theo duration và cú sốc lãi suất')
+    ax.set_xlabel('Rate shock')
+    ax.set_ylabel('Duration bucket')
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('P&L (bn VND)')
+    for i in range(df_heatmap.shape[0]):
+        for j in range(df_heatmap.shape[1]):
+            ax.text(j, i, f"{df_heatmap.iloc[i, j]:,.0f}", ha='center', va='center', fontsize=8)
+    return fig
+
+
+def plot_bucket_pnl(df_bucket, pnl_col):
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.bar(df_bucket['Bucket'], df_bucket[pnl_col])
+    ax.set_title('Stress loss theo duration bucket')
+    ax.set_ylabel('P&L (bn VND)')
+    ax.grid(axis='y', alpha=0.3)
+    return fig
+
+
+def weighted_average_duration(bucket_weights, bucket_durations):
+    return sum(bucket_weights[k] * bucket_durations[k] for k in bucket_weights)
+
 # =========================================================
 # MAIN
 # =========================================================
@@ -290,6 +392,7 @@ if raw is not None and len(raw) > 0:
                 "🧪 Backtest",
                 "📊 Market regime",
                 "🧭 Strategy market 1 & 2",
+                "📉 Duration risk",
                 "🌪️ Scenario analysis",
                 "📋 CEO note"
             ])
@@ -446,6 +549,87 @@ if raw is not None and len(raw) > 0:
                 st.write("Tab này khôi phục đúng tinh thần dashboard trước của bạn: forecast phải chuyển hóa thành hành động cụ thể cho market 1 và market 2, chứ không dừng ở việc dự báo thuần túy.")
 
             with tabs[8]:
+                st.subheader("Duration risk module")
+                st.write("Module này lượng hóa mức độ nhạy cảm của danh mục đầu tư đối với biến động lãi suất, bao gồm modified duration, DV01, stress loss, phân bổ duration bucket và tác động lên danh mục chuẩn 50.000 tỷ VND.")
+
+                dcol1, dcol2, dcol3 = st.columns(3)
+                with dcol1:
+                    portfolio_value = st.number_input("Quy mô danh mục (tỷ VND)", min_value=100.0, value=50000.0, step=100.0)
+                with dcol2:
+                    assumed_duration = st.number_input("Modified duration giả định (năm)", min_value=0.5, value=3.0, step=0.5)
+                with dcol3:
+                    shock_bps = st.selectbox("Cú sốc lãi suất", [25, 50, 100, 150, 200], index=2)
+
+                price_change_pct, pnl = estimate_mtm_loss(portfolio_value, assumed_duration, shock_bps / 100.0)
+                dv01_total = estimate_dv01_billion_vnd(portfolio_value, assumed_duration)
+
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Quy mô danh mục", f"{portfolio_value:,.0f} tỷ")
+                m2.metric("Modified duration", f"{assumed_duration:.1f} năm")
+                m3.metric("DV01 ước tính", f"{dv01_total:,.2f} tỷ / 1bp")
+                m4.metric("Stress P&L", f"{pnl:,.0f} tỷ")
+
+                l1, l2 = st.columns(2)
+                with l1:
+                    st.pyplot(plot_duration_price_sensitivity([1, 2, 3, 5, 7, 10], shock_bps))
+                with l2:
+                    duration_grid = [1, 2, 3, 5, 7, 10]
+                    shock_grid = [25, 50, 100, 150, 200]
+                    heatmap_df = stress_loss_heatmap_df(portfolio_value, duration_grid, shock_grid)
+                    st.pyplot(plot_stress_loss_heatmap(heatmap_df))
+
+                st.markdown("### Duration bucket analysis")
+                st.write("Phần này mô phỏng cơ cấu danh mục 50.000 tỷ VND theo các bucket duration. Tỷ trọng có thể điều chỉnh để đánh giá mức độ tập trung rủi ro theo kỳ hạn.")
+
+                b1, b2, b3, b4 = st.columns(4)
+                with b1:
+                    w_short = st.slider("0–1 năm (%)", 0, 100, 25, 5) / 100
+                with b2:
+                    w_1_3 = st.slider("1–3 năm (%)", 0, 100, 35, 5) / 100
+                with b3:
+                    w_3_5 = st.slider("3–5 năm (%)", 0, 100, 25, 5) / 100
+                with b4:
+                    w_5_plus = st.slider("5+ năm (%)", 0, 100, 15, 5) / 100
+
+                weight_sum = w_short + w_1_3 + w_3_5 + w_5_plus
+                if abs(weight_sum - 1.0) > 1e-9:
+                    st.warning(f"Tổng tỷ trọng hiện là {weight_sum*100:.1f}%. Cần điều chỉnh về 100% để phân tích chính xác.")
+                else:
+                    bucket_weights = {
+                        '0-1Y': w_short,
+                        '1-3Y': w_1_3,
+                        '3-5Y': w_3_5,
+                        '5Y+': w_5_plus
+                    }
+                    bucket_durations = {
+                        '0-1Y': 0.5,
+                        '1-3Y': 2.0,
+                        '3-5Y': 4.0,
+                        '5Y+': 7.0
+                    }
+                    wad = weighted_average_duration(bucket_weights, bucket_durations)
+                    bucket_df = compute_bucket_metrics(portfolio_value, bucket_weights, bucket_durations, shock_bps)
+                    pnl_col = f'P&L @ {shock_bps}bps (bn VND)'
+
+                    k1, k2, k3 = st.columns(3)
+                    k1.metric("Weighted avg duration", f"{wad:.2f} năm")
+                    k2.metric("Tổng DV01 bucket", f"{bucket_df['DV01 (bn VND / 1bp)'].sum():,.2f} tỷ / 1bp")
+                    k3.metric("Tổng stress loss", f"{bucket_df[pnl_col].sum():,.0f} tỷ")
+
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.dataframe(bucket_df, use_container_width=True)
+                    with c2:
+                        st.pyplot(plot_bucket_pnl(bucket_df, pnl_col))
+
+                st.markdown("### Ý nghĩa điều hành")
+                st.write("- DV01 cho biết danh mục biến động bao nhiêu tỷ VND khi lợi suất dịch chuyển 1 điểm cơ bản; đây là thước đo rất hữu ích để đặt hạn mức rủi ro.")
+                st.write("- Heatmap stress loss cho thấy tổn thất mark-to-market thay đổi như thế nào khi duration dài hơn hoặc cú sốc lãi suất lớn hơn.")
+                st.write("- Duration bucket analysis giúp nhận diện cụ thể bucket nào đang đóng góp lớn nhất vào rủi ro định giá.")
+                st.write("- Với danh mục chuẩn 50.000 tỷ VND, việc tăng tỷ trọng bucket dài sẽ làm DV01 và stress loss tăng lên rõ rệt.")
+                st.write("- Trong bối cảnh Forecast IR tăng, nên ưu tiên kiểm soát bucket dài, giới hạn DV01 và theo dõi đồng thời tác động lên cost of fund.")
+
+            with tabs[9]:
                 st.subheader("Scenario analysis")
                 shock_sets = {
                     'Base': {},
@@ -463,9 +647,9 @@ if raw is not None and len(raw) > 0:
                     rows.append({'Scenario': name, 'FX Forecast': fx_val, 'IR Forecast': ir_val})
                 scen = pd.DataFrame(rows)
                 st.dataframe(scen, use_container_width=True)
-                st.caption("Scenario analysis giúp dashboard dài hơn và hữu ích hơn: bạn không chỉ biết forecast cơ sở mà còn biết forecast nhạy ra sao khi một số driver chính bị shock.")
+                st.caption("Scenario analysis giúp dashboard dài hơn và hữu ích hơn: không chỉ thể hiện forecast cơ sở mà còn cho thấy mức độ nhạy của forecast khi các driver chính bị shock.")
 
-            with tabs[9]:
+            with tabs[10]:
                 st.subheader("CEO narrative")
                 fx_text = top_driver_text(fx_res['contrib'], 'tỷ giá')
                 ir_text = top_driver_text(ir_res['contrib'], 'lãi suất')
