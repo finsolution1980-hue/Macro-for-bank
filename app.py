@@ -391,13 +391,54 @@ def classify_duration_risk(stress_loss_billion_vnd, portfolio_value_billion_vnd)
     return "An toàn"
 
 
-def tab_hint(tab_idx, total_tabs=11):
+def tab_hint(tab_idx, total_tabs=9):
     if mobile_mode:
         st.info("👉 Dashboard có nhiều tab. Vuốt ngang trên thanh tab để xem các phần phân tích khác.")
         st.caption(f"Tab {tab_idx}/{total_tabs} • Vuốt ngang để xem tiếp")
     else:
         st.info("👉 Dashboard có nhiều tab. Click các tab phía trên để xem các phần phân tích khác.")
         st.caption(f"Tab {tab_idx}/{total_tabs}")
+
+
+def plot_missing_values(df):
+    miss = df.isna().sum()
+    miss = miss[miss > 0].sort_values(ascending=False).head(15)
+    fig, ax = plt.subplots(figsize=(8, 4))
+    if len(miss) == 0:
+        ax.text(0.5, 0.5, "Không có giá trị thiếu", ha="center", va="center")
+        ax.axis("off")
+    else:
+        ax.barh(miss.index, miss.values)
+        ax.set_title("Số lượng giá trị thiếu theo biến")
+        ax.grid(axis='x', alpha=0.3)
+    return fig
+
+def plot_fx_ir_overview(df):
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    hist = df.tail(24)
+    ax.plot(hist['date'], hist['usd_vnd'], label='USD/VND', linewidth=2)
+    ax2 = ax.twinx()
+    ax2.plot(hist['date'], hist['vibor_on'], label='VIBOR ON', linewidth=2, linestyle='--')
+    ax.set_title("Diễn biến USD/VND và VIBOR ON")
+    ax.grid(alpha=0.3)
+    ax.legend(loc='upper left')
+    ax2.legend(loc='upper right')
+    return fig
+
+def plot_correlation_heatmap_like(df, cols):
+    corr = df[cols].corr().round(2)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    im = ax.imshow(corr.values, aspect='auto')
+    ax.set_xticks(range(len(corr.columns)))
+    ax.set_xticklabels(corr.columns, rotation=45, ha='right')
+    ax.set_yticks(range(len(corr.index)))
+    ax.set_yticklabels(corr.index)
+    ax.set_title("Tương quan giữa các biến chính")
+    plt.colorbar(im, ax=ax)
+    for i in range(len(corr.index)):
+        for j in range(len(corr.columns)):
+            ax.text(j, i, f"{corr.iloc[i,j]:.2f}", ha='center', va='center', fontsize=7)
+    return fig
 
 # =========================================================
 # MAIN
@@ -419,11 +460,9 @@ if raw is not None and len(raw) > 0:
             st.error("Dữ liệu hiện quá ngắn. Sau khi tạo lag và horizon, cần có tối thiểu khoảng 24 quan sát hữu ích.")
         else:
             tabs = st.tabs([
-                "📊 Data snapshot",
-                "💵 FX overview",
-                "📈 IR overview",
-                "🔍 FX explain",
-                "🧠 IR explain",
+                "📊 Tổng quan dữ liệu",
+                "💵 Dự báo tỷ giá",
+                "📈 Dự báo lãi suất ON",
                 "🧪 Backtest",
                 "📊 Market regime",
                 "🧭 Strategy market 1 & 2",
@@ -433,8 +472,8 @@ if raw is not None and len(raw) > 0:
             ])
 
             with tabs[0]:
-                st.subheader("Snapshot dữ liệu đầu vào")
-                tab_hint(1, 11)
+                st.subheader("Tổng quan dữ liệu")
+                tab_hint(1, 9)
 
                 preview_rows = 5 if mobile_mode else show_tail
                 s1, s2, s3, s4 = responsive_cols(4)
@@ -442,12 +481,25 @@ if raw is not None and len(raw) > 0:
                 s2.metric("Ngày đầu", df['date'].min().strftime('%Y-%m-%d'))
                 s3.metric("Ngày cuối", df['date'].max().strftime('%Y-%m-%d'))
                 s4.metric("Số biến giải thích", len(features))
+
+                top1, top2 = responsive_cols(2)
+                with top1:
+                    st.pyplot(plot_fx_ir_overview(df))
+                with top2:
+                    st.pyplot(plot_missing_values(raw))
+
+                corr_cols = [c for c in ['usd_vnd', 'vibor_on', 'dxy_index', 'us_10y_yield', 'fed_rate', 'gold_price'] if c in df.columns]
+                if len(corr_cols) >= 2:
+                    st.pyplot(plot_correlation_heatmap_like(df, corr_cols))
+
+                st.markdown("### Dữ liệu gần nhất")
                 st.dataframe(df.tail(preview_rows), width="stretch")
                 st.caption("Dữ liệu được cập nhật tự động từ Google Sheets.")
 
             with tabs[1]:
-                st.subheader("Tổng quan về tỷ giá")
-                tab_hint(2, 11)
+                st.subheader("Dự báo tỷ giá")
+                tab_hint(2, 9)
+
                 c1, c2 = responsive_cols(2)
                 with c1:
                     st.pyplot(plot_series_with_forecast(df, 'usd_vnd', 'fx_trend', fx_res['forecast'], forecast_horizon, 'USD/VND actual vs trend vs forecast'))
@@ -461,9 +513,23 @@ if raw is not None and len(raw) > 0:
                 st.markdown("### Hệ số nhạy")
                 st.dataframe(fx_res["coef"].head(15).rename("coefficient").to_frame(), width="stretch")
 
+                left, right = responsive_ratio([1, 1])
+                with left:
+                    st.pyplot(plot_contrib(fx_res['contrib'], 'Driver contribution into FX forecast', 12))
+                with right:
+                    st.markdown("### Giải thích sâu")
+                    st.write(top_driver_text(fx_res['contrib'], 'tỷ giá'))
+                    st.write("Cột dương là các biến đóng góp làm tăng forecast tỷ giá; cột âm là các biến đóng góp làm giảm forecast. Độ lớn thể hiện mức độ chi phối của từng biến ở thời điểm hiện tại.")
+
+                st.markdown("### Lưu ý khi ra quyết định")
+                st.write("- Nếu tỷ giá dự báo tăng nhưng đang ở vùng rất cao so với lịch sử, cần cảnh giác với rủi ro phản ứng quá mức.")
+                st.write("- Nếu contribution tập trung vào 1–2 biến, dự báo sẽ nhạy hơn với nhiễu dữ liệu ở các biến đó.")
+                st.write("- Nếu backtest gần đây suy giảm, nên dùng forecast như tín hiệu định hướng thay vì tín hiệu giao dịch cứng.")
+
             with tabs[2]:
-                st.subheader("Tổng quan về lãi suất")
-                tab_hint(3, 11)
+                st.subheader("Dự báo lãi suất ON")
+                tab_hint(3, 9)
+
                 c1, c2 = responsive_cols(2)
                 with c1:
                     st.pyplot(plot_series_with_forecast(df, 'vibor_on', 'ir_trend', ir_res['forecast'], forecast_horizon, 'VIBOR ON actual vs trend vs forecast'))
@@ -472,47 +538,27 @@ if raw is not None and len(raw) > 0:
 
                 st.markdown("### Diễn giải nhanh")
                 st.write(top_driver_text(ir_res['contrib'], 'lãi suất'))
-                st.write("Lãi suất ngắn hạn thường nhạy hơn với thanh khoản hệ thống, OMO, áp lực tỷ giá, chênh lệch lãi suất quốc tế và lạm phát.")
+                st.write("Lãi suất ON thường nhạy hơn với thanh khoản hệ thống, OMO, áp lực tỷ giá, chênh lệch lãi suất quốc tế và lạm phát.")
 
                 st.markdown("### Hệ số nhạy")
                 st.dataframe(ir_res["coef"].head(15).rename("coefficient").to_frame(), width="stretch")
 
-            with tabs[3]:
-                st.subheader("Giải thích sâu cho dự báo tỷ giá")
-                tab_hint(4, 11)
-                left, right = responsive_ratio([1, 1])
-                with left:
-                    st.pyplot(plot_contrib(fx_res['contrib'], 'Driver contribution into FX forecast', 12))
-                with right:
-                    st.markdown("### Vì sao ra kết quả này?")
-                    st.write(top_driver_text(fx_res['contrib'], 'tỷ giá'))
-                    st.write("Ghi chú: Cột dương là các biến đóng góp làm tăng; cột âm là các biến óng góp làm giảm.")
-                    st.write("Độ lớn cho biết biến nào đang chi phối mạnh hơn ở thời điểm hiện tại.")
-
-                st.markdown("### Lưu ý khi ra quyết định:")
-                st.write("- Nếu tỷ giá dự báo tăng nhưng đang ở vùng rất cao so với lịch sử ==> nên cảnh giác với rủi ro mô hình phản ứng thái quá.")
-                st.write("- Nếu đồ thị tập trung vào 1 đến 2 biến duy nhất ==> dự báo rất dễ nhạy với nhiễu dữ liệu ở chính các biến đó.")
-                st.write("- Nếu backtest gần đây cho thấy độ chính xác giảm ==> nên dùng dự báo này như tín hiệu định hướng chứ chưa nên mở vị thế lớn.")
-
-            with tabs[4]:
-                st.subheader("Giải thích sâu cho dự báo lãi suất")
-                tab_hint(5, 11)
                 left, right = responsive_ratio([1, 1])
                 with left:
                     st.pyplot(plot_contrib(ir_res['contrib'], 'Driver contribution into IR forecast', 12))
                 with right:
-                    st.markdown("### Giải thích kết quả dự báo:")
+                    st.markdown("### Giải thích sâu")
                     st.write(top_driver_text(ir_res['contrib'], 'lãi suất'))
-                    st.write("Khi phân bố nghiêng mạnh về các biến thanh khoản và lãi suất quốc tế, đó là tín hiệu cho thấy lãi suất trong nước đang được dẫn dắt bởi áp lực về vốn và lãi suất bên ngoài nhiều hơn là yếu tố tăng trưởng nội địa.")
-                    st.write("Ngược lại, khi các biến CPI, hoạt động kinh tế hoặc biến giả (seasonal dummy) có vai trò lớn hơn, kết quả dự báo bị tác động nhiều hơn bởi các xu hướng nội tại của nền kinh tế.")
+                    st.write("Khi phân bố nghiêng mạnh về các biến thanh khoản và lãi suất quốc tế, lãi suất trong nước đang được dẫn dắt nhiều hơn bởi áp lực funding và lãi suất bên ngoài.")
+                    st.write("Ngược lại, khi CPI, hoạt động kinh tế hoặc seasonal dummy nổi bật hơn, kết quả phản ánh nhiều hơn xu hướng nội tại của nền kinh tế.")
 
-                st.markdown("### Cách sử dụng kết quả cho Treasury")
-                st.write("- Dự báo lãi suất (Forecast IR) tăng: hạn chế kéo kỳ hạn (duration) quá dài và cần quản trị giá vốn (cost of fund) thận trọng hơn.")
-                st.write("- Dự báo lãi suất (Forecast IR) giảm hoặc ổn định: có thể cân nhắc mở kỳ hạn (duration) chọn lọc, tối ưu carry trên danh mục đầu tư.")
+                st.markdown("### Cách sử dụng cho Treasury")
+                st.write("- Forecast IR tăng: hạn chế kéo duration quá dài và cần quản trị cost of fund thận trọng hơn.")
+                st.write("- Forecast IR giảm hoặc ổn định: có thể cân nhắc mở duration chọn lọc, tối ưu carry trên danh mục đầu tư.")
 
-            with tabs[5]:
+            with tabs[3]:
                 st.subheader("Backtest và độ tin cậy")
-                tab_hint(6, 11)
+                tab_hint(4, 9)
                 c1, c2 = responsive_cols(2)
                 with c1:
                     if bt_fx is not None:
@@ -535,9 +581,9 @@ if raw is not None and len(raw) > 0:
 
                 st.warning("Ghi chú: Backtest giúp đánh giá mức độ chính xác của mô hình khi so kết quả dự báo với dự liệu thật trong các kỳ gần đây.")
 
-            with tabs[6]:
+            with tabs[4]:
                 st.subheader("Market regime")
-                tab_hint(7, 11)
+                tab_hint(5, 9)
                 fx_latest, fx_mean, fx_z, fx_pct = regime_signal(df['usd_vnd'])
                 ir_latest, ir_mean, ir_z, ir_pct = regime_signal(df['vibor_on'])
                 a, b, c, d = responsive_cols(4)
@@ -551,9 +597,9 @@ if raw is not None and len(raw) > 0:
                 st.write("- Z-score giúp bạn biết thị trường đang chỉ hơi căng, căng vừa hay căng mạnh.")
                 st.write("- Khi kết hợp forecast với regime, quyết định sẽ thực tế hơn nhiều so với chỉ nhìn hướng tăng/giảm đơn thuần.")
 
-            with tabs[7]:
+            with tabs[5]:
                 st.subheader("Hàm ý chiến lược cho thị trường 1 và thị trường 2")
-                tab_hint(8, 11)
+                tab_hint(6, 9)
                 m1, m2 = responsive_cols(2)
                 with m1:
                     st.info("**Thị trường 1 – Lending / Funding / Balance Sheet**")
@@ -580,9 +626,9 @@ if raw is not None and len(raw) > 0:
                 st.markdown("### Góc nhìn điều hành")
                 st.write("Tab này khôi phục đúng tinh thần dashboard trước của bạn: forecast phải chuyển hóa thành hành động cụ thể cho market 1 và market 2, chứ không dừng ở việc dự báo thuần túy.")
 
-            with tabs[8]:
+            with tabs[6]:
                 st.subheader("Duration risk module")
-                tab_hint(9, 11)
+                tab_hint(7, 9)
                 if mobile_mode:
                     st.caption("Chế độ mobile hiển thị theo dạng xếp dọc để dễ theo dõi trên điện thoại.")
                 st.write("Module này lượng hóa mức độ nhạy cảm của danh mục đầu tư đối với biến động lãi suất, bao gồm modified duration, DV01, stress loss, phân bổ duration bucket và tác động lên danh mục chuẩn 50.000 tỷ VND.")
@@ -664,9 +710,9 @@ if raw is not None and len(raw) > 0:
                 st.write("- Với danh mục chuẩn 50.000 tỷ VND, việc tăng tỷ trọng bucket dài sẽ làm DV01 và stress loss tăng lên rõ rệt.")
                 st.write("- Trong bối cảnh Forecast IR tăng, nên ưu tiên kiểm soát bucket dài, giới hạn DV01 và theo dõi đồng thời tác động lên cost of fund.")
 
-            with tabs[9]:
+            with tabs[7]:
                 st.subheader("Scenario analysis")
-                tab_hint(10, 11)
+                tab_hint(6, 9)
                 shock_sets = {
                     'Base': {},
                     'DXY +1': {'dxy_index': 1.0} if safe_get(df, 'dxy_index') else {},
@@ -685,9 +731,9 @@ if raw is not None and len(raw) > 0:
                 st.dataframe(scen, width="stretch", height=260 if mobile_mode else "auto")
                 st.caption("Scenario analysis giúp dashboard dài hơn và hữu ích hơn: không chỉ thể hiện forecast cơ sở mà còn cho thấy mức độ nhạy của forecast khi các driver chính bị shock.")
 
-            with tabs[10]:
+            with tabs[8]:
                 st.subheader("CEO narrative")
-                tab_hint(11, 11)
+                tab_hint(7, 9)
                 fx_text = top_driver_text(fx_res['contrib'], 'tỷ giá')
                 ir_text = top_driver_text(ir_res['contrib'], 'lãi suất')
                 note = f"""
