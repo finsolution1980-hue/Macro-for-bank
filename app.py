@@ -391,7 +391,7 @@ def classify_duration_risk(stress_loss_billion_vnd, portfolio_value_billion_vnd)
     return "An toàn"
 
 
-def tab_hint(tab_idx, total_tabs=9):
+def tab_hint(tab_idx, total_tabs=8):
     if mobile_mode:
         st.info("👉 Dashboard có nhiều tab. Vuốt ngang trên thanh tab để xem các phần phân tích khác.")
         st.caption(f"Tab {tab_idx}/{total_tabs} • Vuốt ngang để xem tiếp")
@@ -464,16 +464,15 @@ if raw is not None and len(raw) > 0:
                 "💵 Dự báo tỷ giá",
                 "📈 Dự báo lãi suất ON",
                 "🧪 Backtest",
-                "📊 Market regime",
-                "🧭 Strategy market 1 & 2",
-                "📉 Duration risk",
-                "🌪️ Scenario analysis",
+                "📉 Rủi ro kỳ hạn",
+                "📊 Phân tích thị trường",
+                "🧭 Khuyến nghị chiến lược",
                 "📋 CEO note"
             ])
 
             with tabs[0]:
                 st.subheader("Tổng quan dữ liệu")
-                tab_hint(1, 9)
+                tab_hint(1, 8)
 
                 preview_rows = 5 if mobile_mode else show_tail
                 s1, s2, s3, s4 = responsive_cols(4)
@@ -498,7 +497,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[1]:
                 st.subheader("Dự báo tỷ giá")
-                tab_hint(2, 9)
+                tab_hint(2, 8)
 
                 c1, c2 = responsive_cols(2)
                 with c1:
@@ -528,7 +527,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[2]:
                 st.subheader("Dự báo lãi suất ON")
-                tab_hint(3, 9)
+                tab_hint(3, 8)
 
                 c1, c2 = responsive_cols(2)
                 with c1:
@@ -558,7 +557,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[3]:
                 st.subheader("Backtest và độ tin cậy")
-                tab_hint(4, 9)
+                tab_hint(4, 8)
                 c1, c2 = responsive_cols(2)
                 with c1:
                     if bt_fx is not None:
@@ -582,53 +581,8 @@ if raw is not None and len(raw) > 0:
                 st.warning("Ghi chú: Backtest giúp đánh giá mức độ chính xác của mô hình khi so kết quả dự báo với dự liệu thật trong các kỳ gần đây.")
 
             with tabs[4]:
-                st.subheader("Market regime")
-                tab_hint(5, 9)
-                fx_latest, fx_mean, fx_z, fx_pct = regime_signal(df['usd_vnd'])
-                ir_latest, ir_mean, ir_z, ir_pct = regime_signal(df['vibor_on'])
-                a, b, c, d = responsive_cols(4)
-                a.metric('FX vs mean', f'{fx_latest:,.0f}', f'z={fx_z:.2f}')
-                b.metric('FX percentile', f'{fx_pct:.1f}%')
-                c.metric('IR vs mean', f'{ir_latest:.2f}%', f'z={ir_z:.2f}')
-                d.metric('IR percentile', f'{ir_pct:.1f}%')
-
-                st.markdown("### Cách đọc")
-                st.write("- Percentile cao nghĩa là biến đang ở vùng lịch sử tương đối cao; rủi ro mean reversion tăng lên.")
-                st.write("- Z-score giúp bạn biết thị trường đang chỉ hơi căng, căng vừa hay căng mạnh.")
-                st.write("- Khi kết hợp forecast với regime, quyết định sẽ thực tế hơn nhiều so với chỉ nhìn hướng tăng/giảm đơn thuần.")
-
-            with tabs[5]:
-                st.subheader("Hàm ý chiến lược cho thị trường 1 và thị trường 2")
-                tab_hint(6, 9)
-                m1, m2 = responsive_cols(2)
-                with m1:
-                    st.info("**Thị trường 1 – Lending / Funding / Balance Sheet**")
-                    if ir_res['delta'] > 0.15:
-                        st.write("- Lãi suất có xu hướng tăng: ưu tiên bảo vệ NIM, kiểm soát repricing gap và kéo dài kỳ hạn huy động chọn lọc.")
-                    else:
-                        st.write("- Lãi suất chưa tăng mạnh: có thể linh hoạt hơn trong pricing tín dụng và tối ưu tăng trưởng tài sản sinh lãi.")
-                    if fx_res['delta'] > 80:
-                        st.write("- Tỷ giá dự báo tăng: rà soát khách hàng nhập khẩu, khách hàng vay ngoại tệ và áp lực chuyển dịch sang VND funding.")
-                    else:
-                        st.write("- Tỷ giá không quá căng: áp lực lên khách hàng ngoại tệ và nhu cầu hedge có thể ở mức vừa phải hơn.")
-
-                with m2:
-                    st.warning("**Thị trường 2 – Treasury / Investment Book / FX**")
-                    if fx_res['delta'] > 80:
-                        st.write("- Nghiêng về trạng thái FX phòng thủ hơn; ưu tiên hedge ngắn hạn thay vì mở vị thế directional lớn.")
-                    else:
-                        st.write("- FX chưa quá căng: tập trung vào tối ưu carry và vốn VND.")
-                    if ir_res['delta'] > 0.15:
-                        st.write("- Hạn chế kéo duration quá dài; cẩn trọng với P&L mark-to-market trên sổ đầu tư.")
-                    else:
-                        st.write("- Có thể cân nhắc mở duration chọn lọc khi lợi suất ổn định hơn và funding bớt áp lực.")
-
-                st.markdown("### Góc nhìn điều hành")
-                st.write("Tab này khôi phục đúng tinh thần dashboard trước của bạn: forecast phải chuyển hóa thành hành động cụ thể cho market 1 và market 2, chứ không dừng ở việc dự báo thuần túy.")
-
-            with tabs[6]:
-                st.subheader("Duration risk module")
-                tab_hint(7, 9)
+                st.subheader("Rủi ro kỳ hạn")
+                tab_hint(5, 8)
                 if mobile_mode:
                     st.caption("Chế độ mobile hiển thị theo dạng xếp dọc để dễ theo dõi trên điện thoại.")
                 st.write("Module này lượng hóa mức độ nhạy cảm của danh mục đầu tư đối với biến động lãi suất, bao gồm modified duration, DV01, stress loss, phân bổ duration bucket và tác động lên danh mục chuẩn 50.000 tỷ VND.")
@@ -659,7 +613,7 @@ if raw is not None and len(raw) > 0:
                     heatmap_df = stress_loss_heatmap_df(portfolio_value, duration_grid, shock_grid)
                     st.pyplot(plot_stress_loss_heatmap(heatmap_df))
 
-                st.markdown("### Duration bucket analysis")
+                st.markdown("### Phân tích bucket kỳ hạn")
                 st.write("Phần này mô phỏng cơ cấu danh mục 50.000 tỷ VND theo các bucket duration. Tỷ trọng có thể điều chỉnh để đánh giá mức độ tập trung rủi ro theo kỳ hạn.")
 
                 b1, b2, b3, b4 = responsive_cols(4)
@@ -676,18 +630,8 @@ if raw is not None and len(raw) > 0:
                 if abs(weight_sum - 1.0) > 1e-9:
                     st.warning(f"Tổng tỷ trọng hiện là {weight_sum*100:.1f}%. Cần điều chỉnh về 100% để phân tích chính xác.")
                 else:
-                    bucket_weights = {
-                        '0-1Y': w_short,
-                        '1-3Y': w_1_3,
-                        '3-5Y': w_3_5,
-                        '5Y+': w_5_plus
-                    }
-                    bucket_durations = {
-                        '0-1Y': 0.5,
-                        '1-3Y': 2.0,
-                        '3-5Y': 4.0,
-                        '5Y+': 7.0
-                    }
+                    bucket_weights = {'0-1Y': w_short, '1-3Y': w_1_3, '3-5Y': w_3_5, '5Y+': w_5_plus}
+                    bucket_durations = {'0-1Y': 0.5, '1-3Y': 2.0, '3-5Y': 4.0, '5Y+': 7.0}
                     wad = weighted_average_duration(bucket_weights, bucket_durations)
                     bucket_df = compute_bucket_metrics(portfolio_value, bucket_weights, bucket_durations, shock_bps)
                     pnl_col = f'P&L @ {shock_bps}bps (bn VND)'
@@ -704,15 +648,29 @@ if raw is not None and len(raw) > 0:
                         st.pyplot(plot_bucket_pnl(bucket_df, pnl_col))
 
                 st.markdown("### Ý nghĩa điều hành")
-                st.write("- DV01 cho biết danh mục biến động bao nhiêu tỷ VND khi lợi suất dịch chuyển 1 điểm cơ bản; đây là thước đo rất hữu ích để đặt hạn mức rủi ro.")
+                st.write("- DV01 cho biết danh mục biến động bao nhiêu tỷ VND khi lợi suất dịch chuyển 1 điểm cơ bản; đây là thước đo hữu ích để đặt hạn mức rủi ro.")
                 st.write("- Heatmap stress loss cho thấy tổn thất mark-to-market thay đổi như thế nào khi duration dài hơn hoặc cú sốc lãi suất lớn hơn.")
                 st.write("- Duration bucket analysis giúp nhận diện cụ thể bucket nào đang đóng góp lớn nhất vào rủi ro định giá.")
                 st.write("- Với danh mục chuẩn 50.000 tỷ VND, việc tăng tỷ trọng bucket dài sẽ làm DV01 và stress loss tăng lên rõ rệt.")
-                st.write("- Trong bối cảnh Forecast IR tăng, nên ưu tiên kiểm soát bucket dài, giới hạn DV01 và theo dõi đồng thời tác động lên cost of fund.")
+                st.write("- Khi Forecast IR tăng, nên ưu tiên kiểm soát bucket dài, giới hạn DV01 và theo dõi đồng thời tác động lên cost of fund.")
 
-            with tabs[7]:
-                st.subheader("Scenario analysis")
-                tab_hint(6, 9)
+            with tabs[5]:
+                st.subheader("Phân tích thị trường")
+                tab_hint(6, 8)
+                fx_latest, fx_mean, fx_z, fx_pct = regime_signal(df['usd_vnd'])
+                ir_latest, ir_mean, ir_z, ir_pct = regime_signal(df['vibor_on'])
+                a, b, c, d = responsive_cols(4)
+                a.metric('FX vs mean', f'{fx_latest:,.0f}', f'z={fx_z:.2f}')
+                b.metric('FX percentile', f'{fx_pct:.1f}%')
+                c.metric('IR vs mean', f'{ir_latest:.2f}%', f'z={ir_z:.2f}')
+                d.metric('IR percentile', f'{ir_pct:.1f}%')
+
+                st.markdown("### Vị thế thị trường trong lịch sử")
+                st.write("- Percentile cao cho thấy biến đang ở vùng lịch sử tương đối cao; rủi ro mean reversion tăng lên.")
+                st.write("- Z-score giúp lượng hóa mức độ căng của thị trường.")
+                st.write("- Khi kết hợp hướng forecast với regime, đánh giá thị trường sẽ thực tế hơn so với chỉ nhìn hướng tăng/giảm đơn thuần.")
+
+                st.markdown("### Phân tích kịch bản")
                 shock_sets = {
                     'Base': {},
                     'DXY +1': {'dxy_index': 1.0} if safe_get(df, 'dxy_index') else {},
@@ -726,14 +684,74 @@ if raw is not None and len(raw) > 0:
                 for name, shocks in shock_sets.items():
                     fx_val = scenario_analysis(df, 'fx_trend', features, forecast_horizon, shocks)
                     ir_val = scenario_analysis(df, 'ir_trend', features, forecast_horizon, shocks)
-                    rows.append({'Scenario': name, 'FX Forecast': fx_val, 'IR Forecast': ir_val})
+                    rows.append({'Kịch bản': name, 'Dự báo FX': fx_val, 'Dự báo IR': ir_val})
                 scen = pd.DataFrame(rows)
                 st.dataframe(scen, width="stretch", height=260 if mobile_mode else "auto")
-                st.caption("Scenario analysis giúp dashboard dài hơn và hữu ích hơn: không chỉ thể hiện forecast cơ sở mà còn cho thấy mức độ nhạy của forecast khi các driver chính bị shock.")
+                st.caption("Bảng kịch bản cho thấy mức độ nhạy của forecast khi các driver chính bị shock và hỗ trợ đánh giá biên độ rủi ro của nhận định cơ sở.")
 
-            with tabs[8]:
+            with tabs[6]:
+                st.subheader("Khuyến nghị chiến lược")
+                tab_hint(7, 8)
+
+                fx_up = fx_res['delta'] > 80
+                ir_up = ir_res['delta'] > 0.15
+                fx_hot = fx_pct >= 90
+                ir_hot = ir_pct >= 90
+
+                st.markdown("### Định hướng trọng tâm")
+                if ir_up and fx_up:
+                    st.error("Kịch bản trung tâm hiện tại là lãi suất ON tăng cùng với áp lực tỷ giá đi lên. Đây là tổ hợp bất lợi cho cả cost of fund, trạng thái ngoại tệ và định giá danh mục đầu tư.")
+                elif ir_up:
+                    st.warning("Kịch bản trung tâm hiện tại là lãi suất ON tăng. Trọng tâm điều hành nên nghiêng về bảo vệ NIM, quản trị funding và rủi ro định giá danh mục.")
+                elif fx_up:
+                    st.warning("Kịch bản trung tâm hiện tại là áp lực tỷ giá tăng rõ hơn lãi suất. Trọng tâm điều hành nên nghiêng về quản trị trạng thái ngoại tệ và khách hàng nhạy cảm với ngoại tệ.")
+                else:
+                    st.success("Kịch bản trung tâm hiện tại chưa cho thấy áp lực tăng mạnh đồng thời ở cả lãi suất và tỷ giá. Có thêm dư địa để tối ưu cấu trúc bảng cân đối và hiệu quả danh mục.")
+
+                m1, m2 = responsive_cols(2)
+                with m1:
+                    st.info("**Khuyến nghị cho thị trường 1**")
+                    if ir_up:
+                        st.write("- Chủ động rà soát repricing gap theo kỳ hạn, ưu tiên tăng tốc độ điều chỉnh lãi suất đầu ra ở các nhóm khách hàng có thể repricing sớm.")
+                        st.write("- Điều chỉnh cơ cấu huy động theo hướng tăng tính ổn định của vốn, tránh phụ thuộc quá lớn vào nguồn vốn nhạy với lãi suất ngắn hạn.")
+                    else:
+                        st.write("- Có thể linh hoạt hơn trong định giá tín dụng và lựa chọn phân khúc tăng trưởng, nhưng vẫn cần duy trì kỷ luật margin theo ngành và theo kỳ hạn.")
+                    if fx_up:
+                        st.write("- Rà soát danh mục khách hàng nhập khẩu, khách hàng vay ngoại tệ hoặc doanh nghiệp có nghĩa vụ thanh toán ngoại tệ lớn trong 3–6 tháng tới.")
+                        st.write("- Tăng cường khuyến nghị hedge cho nhóm khách hàng có dòng tiền ngoại tệ âm hoặc biên lợi nhuận mỏng.")
+                    if fx_hot or ir_hot:
+                        st.write("- Do các biến thị trường đang ở vùng cao trong lịch sử, nên thận trọng hơn với các giả định tăng trưởng và tránh mở rộng khẩu vị rủi ro quá nhanh.")
+
+                with m2:
+                    st.warning("**Khuyến nghị cho thị trường 2 / Treasury**")
+                    if ir_up:
+                        st.write("- Giảm khuynh hướng mở thêm duration dài; ưu tiên cấu trúc danh mục có khả năng phòng thủ tốt hơn trước cú sốc lợi suất.")
+                        st.write("- Thiết lập hoặc siết chặt hạn mức DV01 và stress loss cho các bucket dài, đặc biệt nếu danh mục đang tập trung nhiều vào 3–5 năm và 5Y+.")
+                    else:
+                        st.write("- Có thể cân nhắc mở duration chọn lọc ở các điểm lợi suất hấp dẫn, nhưng nên gắn với hạn mức DV01 rõ ràng.")
+                    if fx_up:
+                        st.write("- Giữ trạng thái ngoại tệ thận trọng hơn; ưu tiên hedge ngắn hạn hơn là mở vị thế directional lớn.")
+                        st.write("- Theo dõi sát độ lệch giữa tín hiệu forecast và regime để tránh mua đuổi khi tỷ giá đã ở vùng quá cao.")
+                    if not ir_up and not fx_up:
+                        st.write("- Trọng tâm có thể chuyển sang tối ưu carry, lựa chọn điểm vào danh mục và cải thiện hiệu quả sử dụng vốn VND.")
+
+                st.markdown("### Các hành động ưu tiên trong 30 ngày tới")
+                actions = []
+                if ir_up:
+                    actions.append("Rà soát lại hạn mức DV01, stress loss và phân bổ duration bucket của danh mục đầu tư.")
+                    actions.append("Cập nhật lại giả định cost of fund trong kế hoạch NIM và kế hoạch kinh doanh quý tới.")
+                if fx_up:
+                    actions.append("Đánh giá lại mức độ nhạy cảm của danh mục khách hàng ngoại tệ và cơ chế hedge hiện hành.")
+                if fx_hot or ir_hot:
+                    actions.append("Bổ sung kịch bản đảo chiều ngắn hạn vào quy trình ra quyết định vị thế do thị trường đang ở vùng lịch sử cao.")
+                if not actions:
+                    actions.append("Tiếp tục theo dõi các driver chính và duy trì kỷ luật hạn mức danh mục, sẵn sàng tăng trạng thái khi risk-reward thuận lợi hơn.")
+                for act in actions:
+                    st.write(f"- {act}")
+
+            with tabs[7]:
                 st.subheader("CEO narrative")
-                tab_hint(7, 9)
+                tab_hint(8, 8)
                 fx_text = top_driver_text(fx_res['contrib'], 'tỷ giá')
                 ir_text = top_driver_text(ir_res['contrib'], 'lãi suất')
                 note = f"""
@@ -754,13 +772,12 @@ if raw is not None and len(raw) > 0:
 - Nếu regime đã ở vùng lịch sử rất cao, cần thận trọng với khả năng đảo chiều ngắn hạn.
 
 **5. Cách đọc dashboard**
-- Executive summary: nhìn nhanh mức hiện tại, forecast và biến động gần đây.
-- FX / IR overview: nhìn từng thị trường riêng biệt.
-- Explain tabs: xem driver nào đang kéo forecast lên / xuống.
+- Tổng quan dữ liệu: đánh giá nhanh chất lượng và cấu trúc dữ liệu đầu vào.
+- Dự báo tỷ giá / Dự báo lãi suất ON: xem hướng dự báo, drivers và các điểm cần chú ý.
 - Backtest: kiểm tra forecast có đáng tin không.
-- Regime: hiểu thị trường đang căng tới mức nào so với lịch sử.
-- Strategy tab: chuyển forecast thành hành động cho market 1 và market 2.
-- Scenario tab: xem forecast nhạy thế nào khi biến chính bị shock.
+- Rủi ro kỳ hạn: lượng hóa DV01, stress loss và bucket duration.
+- Phân tích thị trường: kết hợp regime và kịch bản để đánh giá bối cảnh thị trường.
+- Khuyến nghị chiến lược: chuyển forecast thành định hướng hành động cho khối kinh doanh và Treasury.
 """
                 st.markdown(note)
 
