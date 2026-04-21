@@ -467,7 +467,7 @@ if raw is not None and len(raw) > 0:
                 "📉 Rủi ro kỳ hạn",
                 "📊 Phân tích thị trường",
                 "🧭 Khuyến nghị chiến lược",
-                "📋 CEO note"
+                "📋 Tổng kết"
             ])
 
             with tabs[0]:
@@ -750,36 +750,64 @@ if raw is not None and len(raw) > 0:
                     st.write(f"- {act}")
 
             with tabs[7]:
-                st.subheader("CEO narrative")
+                st.subheader("Tổng kết")
                 tab_hint(8, 8)
+
                 fx_text = top_driver_text(fx_res['contrib'], 'tỷ giá')
                 ir_text = top_driver_text(ir_res['contrib'], 'lãi suất')
-                note = f"""
-**1. Kết quả chính**
-- Sau {forecast_horizon} tháng, hệ thống dự báo xu hướng tỷ giá ở mức **{fx_res['forecast']:,.0f}** và xu hướng lãi suất qua đêm ở mức **{ir_res['forecast']:.2f}%**.
-- So với trend hiện tại, tỷ giá thay đổi **{fx_res['delta']:+,.0f}** và lãi suất thay đổi **{ir_res['delta']:+.2f} điểm**.
 
-**2. Vì sao có kết quả này**
-- Với tỷ giá: {fx_text}
-- Với lãi suất: {ir_text}
+                st.markdown("### 1. Tóm tắt dự báo")
+                c1, c2 = responsive_cols(2)
+                c1.metric(
+                    "Tỷ giá (USD/VND)",
+                    f"{fx_res['forecast']:,.0f}",
+                    f"{fx_res['delta']:+,.0f}"
+                )
+                c2.metric(
+                    "Lãi suất ON",
+                    f"{ir_res['forecast']:.2f}%",
+                    f"{ir_res['delta']:+.2f}đ"
+                )
 
-**3. Mức độ tin cậy**
-- Dashboard đi kèm backtest để đánh giá độ phù hợp của mô hình trong các kỳ gần đây. Khi sai số cao hoặc hit ratio thấp, forecast nên được dùng như tín hiệu định hướng thay vì tín hiệu giao dịch cứng.
+                st.markdown("### 2. Động lực chính")
+                st.write(f"- Tỷ giá: {fx_text}")
+                st.write(f"- Lãi suất: {ir_text}")
 
-**4. Hàm ý điều hành**
-- Nếu lãi suất tăng, cần ưu tiên bảo vệ NIM, quản trị funding và duration thận trọng hơn.
-- Nếu tỷ giá tăng, cần tăng cường quản trị trạng thái ngoại tệ và rà soát nhóm khách hàng nhạy cảm với nhập khẩu / vay ngoại tệ.
-- Nếu regime đã ở vùng lịch sử rất cao, cần thận trọng với khả năng đảo chiều ngắn hạn.
+                st.markdown("### 3. Đánh giá bối cảnh thị trường")
+                fx_latest, fx_mean, fx_z, fx_pct = regime_signal(df['usd_vnd'])
+                ir_latest, ir_mean, ir_z, ir_pct = regime_signal(df['vibor_on'])
 
-**5. Cách đọc dashboard**
-- Tổng quan dữ liệu: đánh giá nhanh chất lượng và cấu trúc dữ liệu đầu vào.
-- Dự báo tỷ giá / Dự báo lãi suất ON: xem hướng dự báo, drivers và các điểm cần chú ý.
-- Backtest: kiểm tra forecast có đáng tin không.
-- Rủi ro kỳ hạn: lượng hóa DV01, stress loss và bucket duration.
-- Phân tích thị trường: kết hợp regime và kịch bản để đánh giá bối cảnh thị trường.
-- Khuyến nghị chiến lược: chuyển forecast thành định hướng hành động cho khối kinh doanh và Treasury.
-"""
-                st.markdown(note)
+                if fx_pct >= 90 or ir_pct >= 90:
+                    st.warning("Các biến thị trường đang ở vùng cao trong lịch sử, do đó cần tính đến rủi ro đảo chiều ngắn hạn khi sử dụng forecast cho quyết định vị thế.")
+                elif fx_pct <= 25 or ir_pct <= 25:
+                    st.info("Một số biến thị trường đang ở vùng thấp so với lịch sử, cho thấy khả năng xuất hiện nhịp hồi hoặc điều chỉnh theo hướng ngược lại trong giai đoạn tới.")
+                else:
+                    st.success("Các biến thị trường đang ở vùng trung tính hơn so với lịch sử, giúp tín hiệu forecast thuận lợi hơn cho việc sử dụng làm cơ sở định hướng điều hành.")
+
+                st.markdown("### 4. Rủi ro chính")
+                if fx_res['delta'] > 80:
+                    st.write("- Áp lực tỷ giá tăng có thể làm gia tăng rủi ro đối với khách hàng nhập khẩu, khách hàng vay ngoại tệ và trạng thái ngoại tệ của ngân hàng.")
+                if ir_res['delta'] > 0.15:
+                    st.write("- Lãi suất ON tăng có thể gây áp lực lên cost of fund, NIM và định giá danh mục đầu tư lãi suất cố định.")
+                if abs(ir_res['delta']) <= 0.15 and abs(fx_res['delta']) <= 80:
+                    st.write("- Chưa xuất hiện rủi ro nổi trội ở mức cao trong ngắn hạn, tuy nhiên vẫn cần tiếp tục theo dõi sát các driver chính của forecast.")
+
+                st.markdown("### 5. Khuyến nghị hành động")
+                if ir_res['delta'] > 0.15:
+                    st.write("- Kiểm soát duration danh mục đầu tư ở mức chặt chẽ hơn, hạn chế mở thêm vị thế dài nếu không có biện pháp hedge phù hợp.")
+                    st.write("- Rà soát lại giả định cost of fund, repricing gap và kế hoạch bảo vệ NIM trong các kỳ điều hành tiếp theo.")
+                if fx_res['delta'] > 80:
+                    st.write("- Tăng cường quản trị trạng thái ngoại tệ, ưu tiên hedge ngắn hạn và rà soát nhóm khách hàng có độ nhạy cao với tỷ giá.")
+                if ir_res['delta'] <= 0.15 and fx_res['delta'] <= 80:
+                    st.write("- Có thể tiếp tục tối ưu carry và cơ cấu danh mục ở mức thận trọng, đồng thời duy trì kỷ luật hạn mức rủi ro.")
+
+                st.markdown("### 6. Kết luận điều hành")
+                if ir_res['delta'] > 0.15 and fx_res['delta'] > 80:
+                    st.error("Bối cảnh điều hành hiện tại nghiêng về phòng thủ: cần ưu tiên kiểm soát thanh khoản, hạn mức rủi ro và trạng thái ngoại tệ.")
+                elif ir_res['delta'] > 0.15 or fx_res['delta'] > 80:
+                    st.warning("Bối cảnh điều hành có áp lực tăng ở một số biến trọng yếu, do đó cần bám sát diễn biến thị trường và điều chỉnh chiến lược theo hướng thận trọng.")
+                else:
+                    st.success("Bối cảnh điều hành tương đối ổn định, cho phép tập trung hơn vào tối ưu hiệu quả danh mục và tăng trưởng có chọn lọc.")
 
 else:
     st.info("Không có dữ liệu đầu vào. Có thể chọn chế độ tự động từ Google Sheets hoặc upload file Excel thủ công.")
