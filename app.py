@@ -517,8 +517,32 @@ if raw is not None and len(raw) > 0:
                     st.pyplot(plot_contrib(fx_res['contrib'], 'Driver contribution into FX forecast', 12))
                 with right:
                     st.markdown("### Giải thích sâu")
-                    st.write(top_driver_text(fx_res['contrib'], 'tỷ giá'))
-                    st.write("Cột dương là các biến đóng góp làm tăng forecast tỷ giá; cột âm là các biến đóng góp làm giảm forecast. Độ lớn thể hiện mức độ chi phối của từng biến ở thời điểm hiện tại.")
+
+                    st.markdown("**1. Cấu trúc kết quả dự báo**")
+                    st.write(
+                        "Forecast tỷ giá được hình thành từ hai phần: (i) quán tính của xu hướng lịch sử (trend) "
+                        "và (ii) tác động tại thời điểm hiện tại của các biến vĩ mô."
+                    )
+
+                    st.markdown("**2. Driver nào đang quyết định kết quả**")
+                    st.write(
+                        "Các biến có contribution lớn nhất đang chi phối hướng forecast. "
+                        "Nếu contribution tập trung vào 1–2 biến, kết quả dự báo sẽ nhạy hơn với biến động của chính các biến đó."
+                    )
+
+                    st.markdown("**3. Độ ổn định của tín hiệu**")
+                    st.write(
+                        "Nếu các driver chính là các biến mang tính chu kỳ như DXY hoặc lợi suất Mỹ, "
+                        "forecast có thể thay đổi nhanh khi điều kiện thị trường đảo chiều. "
+                        "Ngược lại, nếu driver nổi bật là các biến nội tại như CPI hoặc hoạt động kinh tế, tín hiệu thường ổn định hơn."
+                    )
+
+                    st.markdown("**4. Cách sử dụng trong điều hành**")
+                    st.write(
+                        "Forecast nên được sử dụng như tín hiệu định hướng. "
+                        "Khi kết hợp với phân tích regime và scenario, có thể đánh giá tốt hơn biên độ rủi ro "
+                        "và tránh quyết định dựa trên một kịch bản đơn lẻ."
+                    )
 
                 st.markdown("### Lưu ý khi ra quyết định")
                 st.write("- Nếu tỷ giá dự báo tăng nhưng đang ở vùng rất cao so với lịch sử, cần cảnh giác với rủi ro phản ứng quá mức.")
@@ -547,9 +571,31 @@ if raw is not None and len(raw) > 0:
                     st.pyplot(plot_contrib(ir_res['contrib'], 'Driver contribution into IR forecast', 12))
                 with right:
                     st.markdown("### Giải thích sâu")
-                    st.write(top_driver_text(ir_res['contrib'], 'lãi suất'))
-                    st.write("Khi phân bố nghiêng mạnh về các biến thanh khoản và lãi suất quốc tế, lãi suất trong nước đang được dẫn dắt nhiều hơn bởi áp lực funding và lãi suất bên ngoài.")
-                    st.write("Ngược lại, khi CPI, hoạt động kinh tế hoặc seasonal dummy nổi bật hơn, kết quả phản ánh nhiều hơn xu hướng nội tại của nền kinh tế.")
+
+                    st.markdown("**1. Cấu trúc dự báo lãi suất**")
+                    st.write(
+                        "Forecast lãi suất ON phản ánh sự kết hợp giữa xu hướng thanh khoản hệ thống "
+                        "và tác động tức thời của các biến như OMO, lãi suất quốc tế, tỷ giá và lạm phát."
+                    )
+
+                    st.markdown("**2. Nhóm driver chi phối**")
+                    st.write(
+                        "Nếu contribution tập trung vào các biến thanh khoản như OMO hoặc các chỉ báo thị trường tiền tệ, "
+                        "lãi suất ON chủ yếu bị dẫn dắt bởi cung – cầu vốn ngắn hạn. "
+                        "Nếu contribution đến nhiều từ yếu tố quốc tế, áp lực bên ngoài đang chi phối rõ hơn."
+                    )
+
+                    st.markdown("**3. Độ tin cậy của forecast**")
+                    st.write(
+                        "Lãi suất ON thường biến động mạnh trong ngắn hạn, do đó forecast có thể thay đổi nhanh khi điều kiện thanh khoản đổi hướng. "
+                        "Cần kết hợp với backtest và regime để đánh giá mức độ tin cậy trước khi sử dụng cho quyết định vị thế lớn."
+                    )
+
+                    st.markdown("**4. Hàm ý cho Treasury**")
+                    st.write(
+                        "Kết quả forecast cần được chuyển hóa thành quản trị duration, DV01 và cost of fund. "
+                        "Không nên chỉ nhìn vào hướng tăng/giảm mà cần đánh giá đồng thời cả mức độ nhạy của danh mục."
+                    )
 
                 st.markdown("### Cách sử dụng cho Treasury")
                 st.write("- Forecast IR tăng: hạn chế kéo duration quá dài và cần quản trị cost of fund thận trọng hơn.")
