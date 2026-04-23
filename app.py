@@ -1,5 +1,4 @@
 import streamlit as st
-import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,7 +6,6 @@ from sklearn.linear_model import Ridge, LinearRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.ensemble import RandomForestRegressor
-from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
 # =========================================================
@@ -28,13 +26,10 @@ data_mode = st.sidebar.radio(
     ["Tự động từ Google Sheets", "Upload file Excel"],
     index=0
 )
+st.sidebar.caption("Secrets cần có: gsheets_input cho dữ liệu đầu vào và gsheets_history cho lịch sử forecast.")
 forecast_horizon = st.sidebar.selectbox("Forecast horizon (months)", [1, 3, 6], index=1)
 backtest_points = st.sidebar.slider("Backtest points", 6, 36, 12)
 show_tail = st.sidebar.slider("Rows to preview", 5, 30, 10)
-st.sidebar.markdown("### Hạn mức rủi ro")
-dv01_limit = st.sidebar.number_input("DV01 limit (tỷ VND / 1bp)", min_value=0.1, value=15.0, step=0.5)
-stress_loss_limit = st.sidebar.number_input("Stress loss limit (tỷ VND)", min_value=100.0, value=1500.0, step=100.0)
-duration_limit = st.sidebar.number_input("Duration limit (năm)", min_value=0.5, value=4.0, step=0.5)
 if st.sidebar.button("🔄 Làm mới dữ liệu"):
     st.cache_data.clear()
     st.rerun()
@@ -44,8 +39,13 @@ if mobile_mode:
 
 @st.cache_data(ttl=600)
 def load_data_from_gsheet():
-    conn = st.connection("gsheets", type=GSheetsConnection)
+    conn = st.connection("gsheets_input", type=GSheetsConnection)
     return conn.read()
+
+def get_history_conn():
+    return st.connection("gsheets_history", type=GSheetsConnection)
+
+st.sidebar.caption("Dữ liệu đầu vào và lịch sử forecast đang dùng 2 Google Sheet tách biệt. Sheet lịch sử có thể để trống ban đầu; app sẽ tự append các dòng forecast mới.")
 
 raw = None
 if data_mode == "Tự động từ Google Sheets":
@@ -398,7 +398,7 @@ def classify_duration_risk(stress_loss_billion_vnd, portfolio_value_billion_vnd)
     return "An toàn"
 
 
-def tab_hint(tab_idx, total_tabs=8):
+def tab_hint(tab_idx, total_tabs=9):
     if mobile_mode:
         st.info("👉 Dashboard có nhiều tab. Vuốt ngang trên thanh tab để xem các phần phân tích khác.")
         st.caption(f"Tab {tab_idx}/{total_tabs} • Vuốt ngang để xem tiếp")
@@ -521,40 +521,30 @@ def classify_risk_light(value, green_thres, yellow_thres):
         return "🟡 Cảnh báo"
     return "🔴 Rủi ro cao"
 
-HISTORY_FILE = "forecast_history.csv"
+def previous_run_forecast_proxy(df, target, features, horizon):
+    if len(df) < 30:
+        return np.nan
+    prev_df = df.iloc[:-1].copy()
+    res = train_forecast(prev_df, target, features, horizon)
+    return float(res['forecast']) if res is not None else np.nan
 
-def get_previous_forecast():
-    if not os.path.exists(HISTORY_FILE):
-        return np.nan, np.nan
-    hist = pd.read_csv(HISTORY_FILE)
-    if len(hist) < 1:
-        return np.nan, np.nan
-    last = hist.iloc[-1]
-    return float(last.get("fx_forecast", np.nan)), float(last.get("ir_forecast", np.nan))
 
-def save_forecast_history(run_time, fx_forecast, ir_forecast, fx_model_name, ir_model_name, fx_rmse, ir_rmse):
-    new_row = pd.DataFrame([{
-        "run_time": run_time,
-        "fx_forecast": fx_forecast,
-        "ir_forecast": ir_forecast,
-        "fx_model": fx_model_name,
-        "ir_model": ir_model_name,
-        "fx_rmse": fx_rmse,
-        "ir_rmse": ir_rmse,
-    }])
+def dynamic_duration_limit(ir_delta):
+    if ir_delta > 0.15:
+        return 2.5
+    elif ir_delta < -0.15:
+        return 5.0
+    return 3.5
 
-    if os.path.exists(HISTORY_FILE):
-        old = pd.read_csv(HISTORY_FILE)
-        hist = pd.concat([old, new_row], ignore_index=True)
-    else:
-        hist = new_row
-
-    hist.to_csv(HISTORY_FILE, index=False)
-
-def load_forecast_history():
-    if not os.path.exists(HISTORY_FILE):
-        return pd.DataFrame()
-    return pd.read_csv(HISTORY_FILE)
+def classify_risk_light_by_limit(value, limit):
+    if limit == 0:
+        return "N/A"
+    ratio = abs(value) / limit
+    if ratio <= 0.7:
+        return "🟢 An toàn"
+    elif ratio <= 1.0:
+        return "🟡 Cảnh báo"
+    return "🔴 Vượt hạn mức"
 
 # =========================================================
 # MAIN
@@ -577,23 +567,12 @@ if raw is not None and len(raw) > 0:
         ir_model_name = model_table_ir.iloc[0]['Model'] if len(model_table_ir) > 0 else "Ridge"
         fx_low, fx_high, fx_rmse = forecast_confidence_band(fx_model_name, fx_res['forecast'] if fx_res else np.nan, bt_fx)
         ir_low, ir_high, ir_rmse = forecast_confidence_band(ir_model_name, ir_res['forecast'] if ir_res else np.nan, bt_ir)
-        prev_fx_forecast, prev_ir_forecast = get_previous_forecast()
+        prev_fx_forecast = previous_run_forecast_proxy(df, 'fx_trend', features, forecast_horizon)
+        prev_ir_forecast = previous_run_forecast_proxy(df, 'ir_trend', features, forecast_horizon)
 
         if fx_res is None or ir_res is None:
             st.error("Dữ liệu hiện quá ngắn. Sau khi tạo lag và horizon, cần có tối thiểu khoảng 24 quan sát hữu ích.")
         else:
-            current_run_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            save_forecast_history(
-                current_run_time,
-                fx_res['forecast'],
-                ir_res['forecast'],
-                fx_model_name,
-                ir_model_name,
-                fx_rmse,
-                ir_rmse
-            )
-            forecast_history = load_forecast_history()
-
             tabs = st.tabs([
                 "📊 Tổng quan dữ liệu",
                 "💵 Dự báo tỷ giá",
@@ -607,7 +586,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[0]:
                 st.subheader("Tổng quan dữ liệu")
-                tab_hint(1, 8)
+                tab_hint(1, 9)
 
                 preview_rows = 5 if mobile_mode else show_tail
                 s1, s2, s3, s4 = responsive_cols(4)
@@ -632,7 +611,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[1]:
                 st.subheader("Dự báo tỷ giá")
-                tab_hint(2, 8)
+                tab_hint(2, 9)
 
                 c1, c2 = responsive_cols(2)
                 with c1:
@@ -686,7 +665,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[2]:
                 st.subheader("Dự báo lãi suất ON")
-                tab_hint(3, 8)
+                tab_hint(3, 9)
 
                 c1, c2 = responsive_cols(2)
                 with c1:
@@ -738,7 +717,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[3]:
                 st.subheader("Backtest và độ tin cậy")
-                tab_hint(4, 8)
+                tab_hint(4, 9)
                 c1, c2 = responsive_cols(2)
                 with c1:
                     if bt_fx is not None:
@@ -763,7 +742,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[4]:
                 st.subheader("Rủi ro kỳ hạn")
-                tab_hint(5, 8)
+                tab_hint(5, 9)
                 if mobile_mode:
                     st.caption("Chế độ mobile hiển thị theo dạng xếp dọc để dễ theo dõi trên điện thoại.")
                 st.write("Module này lượng hóa mức độ nhạy cảm của danh mục đầu tư đối với biến động lãi suất, bao gồm modified duration, DV01, stress loss, phân bổ duration bucket và tác động lên danh mục chuẩn 50.000 tỷ VND.")
@@ -785,11 +764,6 @@ if raw is not None and len(raw) > 0:
                 m3.metric("DV01 ước tính", f"{dv01_total:,.2f} tỷ / 1bp")
                 m4.metric("Stress P&L", f"{pnl:,.0f} tỷ")
 
-                st.markdown("### Traffic light và hạn mức rủi ro")
-                t1, t2, t3 = responsive_cols(3)
-                t1.metric("DV01 status", classify_risk_light(dv01_total, dv01_limit*0.7, dv01_limit), f"limit {dv01_limit:,.1f}")
-                t2.metric("Stress loss status", classify_risk_light(pnl, stress_loss_limit*0.7, stress_loss_limit), f"limit {stress_loss_limit:,.0f}")
-                t3.metric("Duration status", classify_risk_light(assumed_duration, duration_limit*0.7, duration_limit), f"limit {duration_limit:,.1f}")
 
                 l1, l2 = responsive_cols(2)
                 with l1:
@@ -842,8 +816,72 @@ if raw is not None and len(raw) > 0:
                 st.write("- Khi Forecast IR tăng, nên ưu tiên kiểm soát bucket dài, giới hạn DV01 và theo dõi đồng thời tác động lên cost of fund.")
 
             with tabs[5]:
+                st.subheader("Hạn mức rủi ro")
+                tab_hint(6, 9)
+
+                st.markdown("### Khung thiết lập hạn mức")
+                rl1, rl2, rl3 = responsive_cols(3)
+                with rl1:
+                    capital = st.number_input("Quy mô vốn Treasury (tỷ VND)", min_value=1000.0, value=20000.0, step=500.0)
+                with rl2:
+                    risk_appetite = st.slider("Risk appetite (% vốn)", 1, 10, 5) / 100
+                with rl3:
+                    stress_appetite = st.slider("Max stress loss (% vốn)", 1, 15, 7) / 100
+
+                dv01_limit = capital * risk_appetite / 100
+                stress_loss_limit = capital * stress_appetite
+                duration_limit = dynamic_duration_limit(ir_res['delta'])
+
+                st.markdown("### Hạn mức động được hệ thống tính toán")
+                lm1, lm2, lm3 = responsive_cols(3)
+                lm1.metric("DV01 limit", f"{dv01_limit:,.2f} tỷ / 1bp")
+                lm2.metric("Stress loss limit", f"{stress_loss_limit:,.0f} tỷ")
+                lm3.metric("Duration limit", f"{duration_limit:.1f} năm")
+
+                st.markdown("### Mức sử dụng hạn mức hiện tại")
+                util1, util2, util3 = responsive_cols(3)
+                util1.metric("DV01 utilization", f"{(abs(dv01_total) / dv01_limit):.1%}" if dv01_limit else "N/A")
+                util2.metric("Stress loss utilization", f"{(abs(pnl) / stress_loss_limit):.1%}" if stress_loss_limit else "N/A")
+                util3.metric("Duration utilization", f"{(assumed_duration / duration_limit):.1%}" if duration_limit else "N/A")
+
+                st.markdown("### Traffic light")
+                t1, t2, t3 = responsive_cols(3)
+                t1.metric("DV01 status", classify_risk_light_by_limit(dv01_total, dv01_limit), f"limit {dv01_limit:,.1f}")
+                t2.metric("Stress loss status", classify_risk_light_by_limit(pnl, stress_loss_limit), f"limit {stress_loss_limit:,.0f}")
+                t3.metric("Duration status", classify_risk_light_by_limit(assumed_duration, duration_limit), f"limit {duration_limit:,.1f}")
+
+                st.markdown("### Cảnh báo tự động")
+                alert_count = 0
+                if abs(dv01_total) > dv01_limit:
+                    st.error("DV01 đang vượt hạn mức. Cần giảm duration hoặc giảm quy mô rủi ro lãi suất.")
+                    alert_count += 1
+                elif abs(dv01_total) > dv01_limit * 0.7:
+                    st.warning("DV01 đang tiến gần hạn mức. Cần theo dõi sát trước khi mở thêm vị thế.")
+
+                if abs(pnl) > stress_loss_limit:
+                    st.error("Stress loss đang vượt hạn mức. Cần hedge hoặc tái cơ cấu danh mục.")
+                    alert_count += 1
+                elif abs(pnl) > stress_loss_limit * 0.7:
+                    st.warning("Stress loss đang tiến gần hạn mức. Nên hạn chế gia tăng rủi ro ở bucket dài.")
+
+                if assumed_duration > duration_limit:
+                    st.error("Duration đang vượt hạn mức động theo bối cảnh thị trường hiện tại.")
+                    alert_count += 1
+                elif assumed_duration > duration_limit * 0.7:
+                    st.warning("Duration đang tiến gần hạn mức động. Cần thận trọng khi mở thêm vị thế dài.")
+
+                if alert_count == 0:
+                    st.success("Các chỉ tiêu rủi ro chính vẫn đang nằm trong vùng chấp nhận được theo hạn mức hiện tại.")
+
+                st.markdown("### Ý nghĩa điều hành")
+                st.write("- DV01 limit phản ánh mức độ nhạy cảm lãi suất tối đa có thể chấp nhận trên mỗi 1bp dịch chuyển lợi suất.")
+                st.write("- Stress loss limit phản ánh ngưỡng tổn thất tối đa chấp nhận được trong kịch bản cú sốc lãi suất đã chọn.")
+                st.write("- Duration limit được điều chỉnh động theo forecast lãi suất ON: khi lãi suất có xu hướng tăng, duration limit sẽ tự động thấp hơn.")
+                st.write("- Tab này giúp chuyển phân tích forecast thành hệ thống kiểm soát rủi ro cụ thể cho ALM và Treasury.")
+
+            with tabs[6]:
                 st.subheader("Phân tích thị trường")
-                tab_hint(6, 8)
+                tab_hint(9, 9)
                 fx_latest, fx_mean, fx_z, fx_pct = regime_signal(df['usd_vnd'])
                 ir_latest, ir_mean, ir_z, ir_pct = regime_signal(df['vibor_on'])
                 a, b, c, d = responsive_cols(4)
@@ -861,7 +899,7 @@ if raw is not None and len(raw) > 0:
                 ch1, ch2 = responsive_cols(2)
                 ch1.metric("Thay đổi forecast FX", f"{fx_res['forecast']:,.0f}", f"{fx_res['forecast'] - prev_fx_forecast:+,.0f}" if not np.isnan(prev_fx_forecast) else "N/A")
                 ch2.metric("Thay đổi forecast IR", f"{ir_res['forecast']:.2f}%", f"{ir_res['forecast'] - prev_ir_forecast:+.2f}" if not np.isnan(prev_ir_forecast) else "N/A")
-                st.caption("So sánh này sử dụng kết quả forecast đã được lưu từ lần chạy thực trước đó của hệ thống.")
+                st.caption("So sánh với lần chạy trước được ước lượng bằng cách loại bỏ điểm dữ liệu mới nhất và chạy lại mô hình trên chuỗi lịch sử ngay trước đó.")
 
                 st.markdown("### Phân tích kịch bản")
                 shock_sets = {
@@ -882,9 +920,9 @@ if raw is not None and len(raw) > 0:
                 st.dataframe(scen, width="stretch", height=260 if mobile_mode else "auto")
                 st.caption("Bảng kịch bản cho thấy mức độ nhạy của forecast khi các driver chính bị shock và hỗ trợ đánh giá biên độ rủi ro của nhận định cơ sở.")
 
-            with tabs[6]:
+            with tabs[7]:
                 st.subheader("Khuyến nghị chiến lược")
-                tab_hint(7, 8)
+                tab_hint(7, 9)
 
                 fx_up = fx_res['delta'] > 80
                 ir_up = ir_res['delta'] > 0.15
@@ -944,7 +982,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[7]:
                 st.subheader("Tổng kết")
-                tab_hint(8, 8)
+                tab_hint(8, 9)
 
                 fx_text = top_driver_text(fx_res['contrib'], 'tỷ giá')
                 ir_text = top_driver_text(ir_res['contrib'], 'lãi suất')
@@ -973,13 +1011,6 @@ if raw is not None and len(raw) > 0:
                     st.write(f"- Forecast FX thay đổi {fx_res['forecast'] - prev_fx_forecast:+,.0f} so với lần chạy trước.")
                 if not np.isnan(prev_ir_forecast):
                     st.write(f"- Forecast IR thay đổi {ir_res['forecast'] - prev_ir_forecast:+.2f} điểm so với lần chạy trước.")
-
-                if len(forecast_history) > 1:
-                    st.markdown("### 2B. Lịch sử forecast")
-                    hist_plot = forecast_history.copy().tail(20)
-                    if "run_time" in hist_plot.columns:
-                        hist_plot = hist_plot.set_index("run_time")
-                    st.line_chart(hist_plot[["fx_forecast", "ir_forecast"]])
 
                 st.markdown("### 3. Đánh giá bối cảnh thị trường")
                 fx_latest, fx_mean, fx_z, fx_pct = regime_signal(df['usd_vnd'])
