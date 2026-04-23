@@ -579,6 +579,7 @@ if raw is not None and len(raw) > 0:
                 "📈 Dự báo lãi suất ON",
                 "🧪 Backtest",
                 "📉 Rủi ro kỳ hạn",
+                "🚦 Hạn mức rủi ro",
                 "📊 Phân tích thị trường",
                 "🧭 Khuyến nghị chiến lược",
                 "📋 Tổng kết"
@@ -881,7 +882,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[6]:
                 st.subheader("Phân tích thị trường")
-                tab_hint(9, 9)
+                tab_hint(7, 9)
                 fx_latest, fx_mean, fx_z, fx_pct = regime_signal(df['usd_vnd'])
                 ir_latest, ir_mean, ir_z, ir_pct = regime_signal(df['vibor_on'])
                 a, b, c, d = responsive_cols(4)
@@ -922,7 +923,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[7]:
                 st.subheader("Khuyến nghị chiến lược")
-                tab_hint(7, 9)
+                tab_hint(8, 9)
 
                 fx_up = fx_res['delta'] > 80
                 ir_up = ir_res['delta'] > 0.15
