@@ -1,10 +1,13 @@
 import streamlit as st
+import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import Ridge, LinearRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.ensemble import RandomForestRegressor
+from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
 
 # =========================================================
@@ -28,6 +31,10 @@ data_mode = st.sidebar.radio(
 forecast_horizon = st.sidebar.selectbox("Forecast horizon (months)", [1, 3, 6], index=1)
 backtest_points = st.sidebar.slider("Backtest points", 6, 36, 12)
 show_tail = st.sidebar.slider("Rows to preview", 5, 30, 10)
+st.sidebar.markdown("### Hạn mức rủi ro")
+dv01_limit = st.sidebar.number_input("DV01 limit (tỷ VND / 1bp)", min_value=0.1, value=15.0, step=0.5)
+stress_loss_limit = st.sidebar.number_input("Stress loss limit (tỷ VND)", min_value=100.0, value=1500.0, step=100.0)
+duration_limit = st.sidebar.number_input("Duration limit (năm)", min_value=0.5, value=4.0, step=0.5)
 if st.sidebar.button("🔄 Làm mới dữ liệu"):
     st.cache_data.clear()
     st.rerun()
@@ -440,6 +447,115 @@ def plot_correlation_heatmap_like(df, cols):
             ax.text(j, i, f"{corr.iloc[i,j]:.2f}", ha='center', va='center', fontsize=7)
     return fig
 
+
+def forecast_confidence_band(model_name, forecast_value, backtest_df):
+    if backtest_df is None or len(backtest_df) == 0:
+        return forecast_value, forecast_value, np.nan
+    rmse = float(np.sqrt(mean_squared_error(backtest_df['actual'], backtest_df['pred'])))
+    if model_name == "Random Forest":
+        width = 1.15 * rmse
+    elif model_name == "Linear Regression":
+        width = 1.00 * rmse
+    else:
+        width = 1.05 * rmse
+    return forecast_value - width, forecast_value + width, rmse
+
+def model_candidates():
+    return {
+        "Ridge": lambda: Ridge(alpha=1.0),
+        "Linear Regression": lambda: LinearRegression(),
+        "Random Forest": lambda: RandomForestRegressor(
+            n_estimators=200, max_depth=5, random_state=42, min_samples_leaf=2
+        ),
+    }
+
+def rolling_backtest_for_model(df, target, features, horizon, n_points, model_name):
+    X, y, meta, model_cols = build_data(df, target, features, horizon)
+    if len(X) < max(24, n_points + 6):
+        return None
+    preds, actuals, dates = [], [], []
+    start = max(24, len(X) - n_points)
+    for i in range(start, len(X)):
+        X_train = X.iloc[:i]
+        y_train = y.iloc[:i]
+        X_test = X.iloc[[i]]
+        scaler = StandardScaler()
+        X_train_s = scaler.fit_transform(X_train)
+        X_test_s = scaler.transform(X_test)
+        model = model_candidates()[model_name]()
+        model.fit(X_train_s, y_train)
+        pred = float(model.predict(X_test_s)[0])
+        preds.append(pred)
+        actuals.append(float(y.iloc[i]))
+        dates.append(meta.iloc[i]['date'])
+    bt = pd.DataFrame({'date': dates, 'actual': actuals, 'pred': preds})
+    bt['error'] = bt['pred'] - bt['actual']
+    bt['abs_pct_error'] = np.where(bt['actual'] != 0, np.abs(bt['error'] / bt['actual']) * 100, np.nan)
+    return bt
+
+def evaluate_model_table(df, target, features, horizon, n_points):
+    rows = []
+    for model_name in model_candidates().keys():
+        bt = rolling_backtest_for_model(df, target, features, horizon, n_points, model_name)
+        if bt is None or len(bt) == 0:
+            continue
+        mae, rmse, mape, hit = summarize_backtest(bt)
+        rows.append({'Model': model_name, 'MAE': mae, 'RMSE': rmse, 'MAPE %': mape, 'Hit Ratio %': hit})
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values(['RMSE', 'MAPE %']).reset_index(drop=True)
+
+def plot_model_comparison(df_model, title):
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.bar(df_model['Model'], df_model['RMSE'])
+    ax.set_title(title)
+    ax.set_ylabel('RMSE')
+    ax.grid(axis='y', alpha=0.3)
+    return fig
+
+def classify_risk_light(value, green_thres, yellow_thres):
+    v = abs(value)
+    if v <= green_thres:
+        return "🟢 An toàn"
+    if v <= yellow_thres:
+        return "🟡 Cảnh báo"
+    return "🔴 Rủi ro cao"
+
+HISTORY_FILE = "forecast_history.csv"
+
+def get_previous_forecast():
+    if not os.path.exists(HISTORY_FILE):
+        return np.nan, np.nan
+    hist = pd.read_csv(HISTORY_FILE)
+    if len(hist) < 1:
+        return np.nan, np.nan
+    last = hist.iloc[-1]
+    return float(last.get("fx_forecast", np.nan)), float(last.get("ir_forecast", np.nan))
+
+def save_forecast_history(run_time, fx_forecast, ir_forecast, fx_model_name, ir_model_name, fx_rmse, ir_rmse):
+    new_row = pd.DataFrame([{
+        "run_time": run_time,
+        "fx_forecast": fx_forecast,
+        "ir_forecast": ir_forecast,
+        "fx_model": fx_model_name,
+        "ir_model": ir_model_name,
+        "fx_rmse": fx_rmse,
+        "ir_rmse": ir_rmse,
+    }])
+
+    if os.path.exists(HISTORY_FILE):
+        old = pd.read_csv(HISTORY_FILE)
+        hist = pd.concat([old, new_row], ignore_index=True)
+    else:
+        hist = new_row
+
+    hist.to_csv(HISTORY_FILE, index=False)
+
+def load_forecast_history():
+    if not os.path.exists(HISTORY_FILE):
+        return pd.DataFrame()
+    return pd.read_csv(HISTORY_FILE)
+
 # =========================================================
 # MAIN
 # =========================================================
@@ -455,10 +571,29 @@ if raw is not None and len(raw) > 0:
         ir_res = train_forecast(df, 'ir_trend', features, forecast_horizon)
         bt_fx = rolling_backtest(df, 'fx_trend', features, forecast_horizon, backtest_points)
         bt_ir = rolling_backtest(df, 'ir_trend', features, forecast_horizon, backtest_points)
+        model_table_fx = evaluate_model_table(df, 'fx_trend', features, forecast_horizon, backtest_points)
+        model_table_ir = evaluate_model_table(df, 'ir_trend', features, forecast_horizon, backtest_points)
+        fx_model_name = model_table_fx.iloc[0]['Model'] if len(model_table_fx) > 0 else "Ridge"
+        ir_model_name = model_table_ir.iloc[0]['Model'] if len(model_table_ir) > 0 else "Ridge"
+        fx_low, fx_high, fx_rmse = forecast_confidence_band(fx_model_name, fx_res['forecast'] if fx_res else np.nan, bt_fx)
+        ir_low, ir_high, ir_rmse = forecast_confidence_band(ir_model_name, ir_res['forecast'] if ir_res else np.nan, bt_ir)
+        prev_fx_forecast, prev_ir_forecast = get_previous_forecast()
 
         if fx_res is None or ir_res is None:
             st.error("Dữ liệu hiện quá ngắn. Sau khi tạo lag và horizon, cần có tối thiểu khoảng 24 quan sát hữu ích.")
         else:
+            current_run_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            save_forecast_history(
+                current_run_time,
+                fx_res['forecast'],
+                ir_res['forecast'],
+                fx_model_name,
+                ir_model_name,
+                fx_rmse,
+                ir_rmse
+            )
+            forecast_history = load_forecast_history()
+
             tabs = st.tabs([
                 "📊 Tổng quan dữ liệu",
                 "💵 Dự báo tỷ giá",
@@ -650,6 +785,12 @@ if raw is not None and len(raw) > 0:
                 m3.metric("DV01 ước tính", f"{dv01_total:,.2f} tỷ / 1bp")
                 m4.metric("Stress P&L", f"{pnl:,.0f} tỷ")
 
+                st.markdown("### Traffic light và hạn mức rủi ro")
+                t1, t2, t3 = responsive_cols(3)
+                t1.metric("DV01 status", classify_risk_light(dv01_total, dv01_limit*0.7, dv01_limit), f"limit {dv01_limit:,.1f}")
+                t2.metric("Stress loss status", classify_risk_light(pnl, stress_loss_limit*0.7, stress_loss_limit), f"limit {stress_loss_limit:,.0f}")
+                t3.metric("Duration status", classify_risk_light(assumed_duration, duration_limit*0.7, duration_limit), f"limit {duration_limit:,.1f}")
+
                 l1, l2 = responsive_cols(2)
                 with l1:
                     st.pyplot(plot_duration_price_sensitivity([1, 2, 3, 5, 7, 10], shock_bps))
@@ -715,6 +856,12 @@ if raw is not None and len(raw) > 0:
                 st.write("- Percentile cao cho thấy biến đang ở vùng lịch sử tương đối cao; rủi ro mean reversion tăng lên.")
                 st.write("- Z-score giúp lượng hóa mức độ căng của thị trường.")
                 st.write("- Khi kết hợp hướng forecast với regime, đánh giá thị trường sẽ thực tế hơn so với chỉ nhìn hướng tăng/giảm đơn thuần.")
+
+                st.markdown("### Điều gì thay đổi so với lần chạy trước")
+                ch1, ch2 = responsive_cols(2)
+                ch1.metric("Thay đổi forecast FX", f"{fx_res['forecast']:,.0f}", f"{fx_res['forecast'] - prev_fx_forecast:+,.0f}" if not np.isnan(prev_fx_forecast) else "N/A")
+                ch2.metric("Thay đổi forecast IR", f"{ir_res['forecast']:.2f}%", f"{ir_res['forecast'] - prev_ir_forecast:+.2f}" if not np.isnan(prev_ir_forecast) else "N/A")
+                st.caption("So sánh này sử dụng kết quả forecast đã được lưu từ lần chạy thực trước đó của hệ thống.")
 
                 st.markdown("### Phân tích kịch bản")
                 shock_sets = {
@@ -818,6 +965,21 @@ if raw is not None and len(raw) > 0:
                 st.markdown("### 2. Động lực chính")
                 st.write(f"- Tỷ giá: {fx_text}")
                 st.write(f"- Lãi suất: {ir_text}")
+
+                st.markdown("### 2A. Độ tin cậy và thay đổi so với lần chạy trước")
+                st.write(f"- Biên độ dự báo FX tham chiếu: {fx_low:,.0f} đến {fx_high:,.0f}; mô hình có RMSE tốt nhất hiện tại: {fx_model_name}.")
+                st.write(f"- Biên độ dự báo IR tham chiếu: {ir_low:.2f}% đến {ir_high:.2f}%; mô hình có RMSE tốt nhất hiện tại: {ir_model_name}.")
+                if not np.isnan(prev_fx_forecast):
+                    st.write(f"- Forecast FX thay đổi {fx_res['forecast'] - prev_fx_forecast:+,.0f} so với lần chạy trước.")
+                if not np.isnan(prev_ir_forecast):
+                    st.write(f"- Forecast IR thay đổi {ir_res['forecast'] - prev_ir_forecast:+.2f} điểm so với lần chạy trước.")
+
+                if len(forecast_history) > 1:
+                    st.markdown("### 2B. Lịch sử forecast")
+                    hist_plot = forecast_history.copy().tail(20)
+                    if "run_time" in hist_plot.columns:
+                        hist_plot = hist_plot.set_index("run_time")
+                    st.line_chart(hist_plot[["fx_forecast", "ir_forecast"]])
 
                 st.markdown("### 3. Đánh giá bối cảnh thị trường")
                 fx_latest, fx_mean, fx_z, fx_pct = regime_signal(df['usd_vnd'])
