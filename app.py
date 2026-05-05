@@ -986,7 +986,7 @@ if raw is not None and len(raw) > 0:
                 for act in actions:
                     st.write(f"- {act}")
 
-            with tabs[7]:
+            with tabs[8]:
                 st.subheader("Tổng kết")
                 tab_hint(8, 9)
 
