@@ -845,6 +845,11 @@ if raw is not None and len(raw) > 0:
                 util2.metric("Stress loss utilization", f"{(abs(pnl) / stress_loss_limit):.1%}" if stress_loss_limit else "N/A")
                 util3.metric("Duration utilization", f"{(assumed_duration / duration_limit):.1%}" if duration_limit else "N/A")
 
+                st.markdown("### Rủi ro so với vốn Treasury")
+                cap1, cap2 = responsive_cols(2)
+                cap1.metric("DV01 / Capital", f"{(dv01_total / capital):.3%} / 1bp" if capital else "N/A")
+                cap2.metric("Stress loss / Capital", f"{(abs(pnl) / capital):.2%}" if capital else "N/A")
+
                 st.markdown("### Traffic light")
                 t1, t2, t3 = responsive_cols(3)
                 t1.metric("DV01 status", classify_risk_light_by_limit(dv01_total, dv01_limit), f"limit {dv01_limit:,.1f}")
