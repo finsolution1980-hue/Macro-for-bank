@@ -103,6 +103,28 @@ def preprocess(df):
     df['ir_chg_1m'] = df['vibor_on'].diff(1)
     df['ir_chg_3m'] = df['vibor_on'].diff(3)
 
+    alm_defaults = {
+        'loan_yield': 0.09,
+        'deposit_cost': 0.05,
+        'nim': 0.04,
+        'asset_repricing_beta': 0.45,
+        'funding_repricing_beta': 0.75,
+        'ldr': 0.85,
+        'casa_ratio': 0.20,
+        'wholesale_funding_ratio': 0.30,
+        'liquidity_buffer': 0.15,
+    }
+
+    for col, default_val in alm_defaults.items():
+        if col not in df.columns:
+            df[col] = default_val
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(default_val)
+
+    df['nim_spread'] = df['loan_yield'] - df['deposit_cost']
+    df['funding_pressure'] = df['deposit_cost'] * df['funding_repricing_beta']
+    df['liquidity_stress'] = df['wholesale_funding_ratio'] / df['liquidity_buffer'].replace(0, np.nan)
+    df['liquidity_stress'] = df['liquidity_stress'].replace([np.inf, -np.inf], np.nan).fillna(0)
+
     return df.ffill().bfill()
 
 
@@ -398,7 +420,7 @@ def classify_duration_risk(stress_loss_billion_vnd, portfolio_value_billion_vnd)
     return "An toàn"
 
 
-def tab_hint(tab_idx, total_tabs=9):
+def tab_hint(tab_idx, total_tabs=10):
     if mobile_mode:
         st.info("👉 Dashboard có nhiều tab. Vuốt ngang trên thanh tab để xem các phần phân tích khác.")
         st.caption(f"Tab {tab_idx}/{total_tabs} • Vuốt ngang để xem tiếp")
@@ -546,6 +568,70 @@ def classify_risk_light_by_limit(value, limit):
         return "🟡 Cảnh báo"
     return "🔴 Vượt hạn mức"
 
+
+def get_latest_row(df):
+    return df.sort_values('date').iloc[-1]
+
+
+def calculate_nim_impact(latest, ir_delta):
+    asset_beta = float(latest.get('asset_repricing_beta', 0.45))
+    funding_beta = float(latest.get('funding_repricing_beta', 0.75))
+    current_nim = float(latest.get('nim', 0.04))
+    nim_impact_pct_points = (asset_beta - funding_beta) * ir_delta
+    forecast_nim = current_nim + nim_impact_pct_points / 100
+    return {
+        'current_nim': current_nim,
+        'nim_impact_pct_points': nim_impact_pct_points,
+        'forecast_nim': forecast_nim,
+        'asset_beta': asset_beta,
+        'funding_beta': funding_beta
+    }
+
+
+def classify_liquidity_stress(liq_score):
+    if liq_score >= 2.0:
+        return "🔴 Căng thẳng cao"
+    if liq_score >= 1.0:
+        return "🟡 Cần theo dõi"
+    return "🟢 Ổn định"
+
+
+def classify_nim_pressure(nim_impact_pct_points):
+    if nim_impact_pct_points <= -0.20:
+        return "🔴 Áp lực NIM cao"
+    if nim_impact_pct_points < 0:
+        return "🟡 NIM chịu áp lực"
+    return "🟢 NIM hỗ trợ"
+
+
+def alco_state(ir_delta, fx_delta, liq_score, fx_pct, ir_pct):
+    if (ir_delta > 0.15 and fx_delta > 80) or liq_score >= 2.0 or ir_pct >= 90:
+        return "Stress"
+    if ir_delta > 0.15 or fx_delta > 80 or liq_score >= 1.0 or fx_pct >= 85:
+        return "Watch"
+    return "Normal"
+
+
+def alco_action_plan(state, ir_delta, fx_delta, nim_impact_pct_points, liq_score):
+    actions = []
+    if state == "Stress":
+        actions.append("Ưu tiên phòng thủ thanh khoản, hạn chế mở thêm vị thế rủi ro và giảm tốc độ kéo duration.")
+        actions.append("Siết hạn mức DV01/stress loss, rà soát bucket 3–5Y và 5Y+ trong danh mục Treasury.")
+        actions.append("Tăng cường hedge ngoại tệ và rà soát nhóm khách hàng có dòng tiền ngoại tệ âm.")
+    elif state == "Watch":
+        actions.append("Hạn chế mở vị thế duration dài mới; chỉ mở chọn lọc khi lợi suất đủ bù rủi ro.")
+        actions.append("Theo dõi cost of fund, repricing gap và nhóm khách hàng nhạy cảm với lãi suất.")
+        actions.append("Duy trì trạng thái ngoại tệ thận trọng, ưu tiên hedge ngắn hạn nếu áp lực FX tăng.")
+    else:
+        actions.append("Có thể tối ưu carry và cơ cấu danh mục ở mức chọn lọc, vẫn giữ kỷ luật hạn mức rủi ro.")
+        actions.append("Theo dõi driver chính của forecast để chuẩn bị chuyển trạng thái nếu thị trường đảo chiều.")
+    if nim_impact_pct_points < 0:
+        actions.append("Cập nhật lại kế hoạch NIM vì funding beta đang cao hơn asset repricing beta.")
+    if liq_score >= 1.0:
+        actions.append("Theo dõi liquidity buffer và tỷ trọng wholesale funding để tránh áp lực funding ngắn hạn.")
+    return actions
+
+
 # =========================================================
 # MAIN
 # =========================================================
@@ -573,6 +659,12 @@ if raw is not None and len(raw) > 0:
         if fx_res is None or ir_res is None:
             st.error("Dữ liệu hiện quá ngắn. Sau khi tạo lag và horizon, cần có tối thiểu khoảng 24 quan sát hữu ích.")
         else:
+            latest = get_latest_row(df)
+            nim_calc = calculate_nim_impact(latest, ir_res['delta'])
+            liq_score = float(latest.get('liquidity_stress', 0))
+            liquidity_status = classify_liquidity_stress(liq_score)
+            nim_status = classify_nim_pressure(nim_calc['nim_impact_pct_points'])
+
             tabs = st.tabs([
                 "📊 Tổng quan dữ liệu",
                 "💵 Dự báo tỷ giá",
@@ -580,6 +672,7 @@ if raw is not None and len(raw) > 0:
                 "🧪 Backtest",
                 "📉 Rủi ro kỳ hạn",
                 "🚦 Hạn mức rủi ro",
+                "🏦 ALM & NIM Impact",
                 "📊 Phân tích thị trường",
                 "🧭 Khuyến nghị chiến lược",
                 "📋 Tổng kết"
@@ -587,7 +680,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[0]:
                 st.subheader("Tổng quan dữ liệu")
-                tab_hint(1, 9)
+                tab_hint(1, 10)
 
                 preview_rows = 5 if mobile_mode else show_tail
                 s1, s2, s3, s4 = responsive_cols(4)
@@ -602,7 +695,7 @@ if raw is not None and len(raw) > 0:
                 with top2:
                     st.pyplot(plot_missing_values(raw))
 
-                corr_cols = [c for c in ['usd_vnd', 'vibor_on', 'dxy_index', 'us_10y_yield', 'fed_rate', 'gold_price'] if c in df.columns]
+                corr_cols = [c for c in ['usd_vnd', 'vibor_on', 'loan_yield', 'deposit_cost', 'nim', 'ldr', 'casa_ratio', 'liquidity_stress', 'dxy_index', 'us_10y_yield', 'fed_rate', 'gold_price'] if c in df.columns]
                 if len(corr_cols) >= 2:
                     st.pyplot(plot_correlation_heatmap_like(df, corr_cols))
 
@@ -612,7 +705,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[1]:
                 st.subheader("Dự báo tỷ giá")
-                tab_hint(2, 9)
+                tab_hint(2, 10)
 
                 c1, c2 = responsive_cols(2)
                 with c1:
@@ -666,7 +759,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[2]:
                 st.subheader("Dự báo lãi suất ON")
-                tab_hint(3, 9)
+                tab_hint(3, 10)
 
                 c1, c2 = responsive_cols(2)
                 with c1:
@@ -718,7 +811,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[3]:
                 st.subheader("Backtest và độ tin cậy")
-                tab_hint(4, 9)
+                tab_hint(4, 10)
                 c1, c2 = responsive_cols(2)
                 with c1:
                     if bt_fx is not None:
@@ -743,7 +836,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[4]:
                 st.subheader("Rủi ro kỳ hạn")
-                tab_hint(5, 9)
+                tab_hint(5, 10)
                 if mobile_mode:
                     st.caption("Chế độ mobile hiển thị theo dạng xếp dọc để dễ theo dõi trên điện thoại.")
                 st.write("Module này lượng hóa mức độ nhạy cảm của danh mục đầu tư đối với biến động lãi suất, bao gồm modified duration, DV01, stress loss, phân bổ duration bucket và tác động lên danh mục chuẩn 50.000 tỷ VND.")
@@ -818,7 +911,7 @@ if raw is not None and len(raw) > 0:
 
             with tabs[5]:
                 st.subheader("Hạn mức rủi ro")
-                tab_hint(6, 9)
+                tab_hint(6, 10)
 
                 st.markdown("### Khung thiết lập hạn mức")
                 rl1, rl2, rl3 = responsive_cols(3)
@@ -886,8 +979,50 @@ if raw is not None and len(raw) > 0:
                 st.write("- Tab này giúp chuyển phân tích forecast thành hệ thống kiểm soát rủi ro cụ thể cho ALM và Treasury.")
 
             with tabs[6]:
+                st.subheader("ALM & NIM Impact")
+                tab_hint(7, 10)
+
+                st.markdown("### Tác động dự báo lãi suất lên NIM")
+                n1, n2, n3, n4 = responsive_cols(4)
+                n1.metric("NIM hiện tại", f"{nim_calc['current_nim']:.2%}")
+                n2.metric("NIM impact", f"{nim_calc['nim_impact_pct_points']:+.2f} điểm %")
+                n3.metric("NIM forecast", f"{nim_calc['forecast_nim']:.2%}")
+                n4.metric("Trạng thái NIM", nim_status)
+
+                st.markdown("### Cấu trúc tái định giá")
+                b1, b2, b3 = responsive_cols(3)
+                b1.metric("Asset repricing beta", f"{nim_calc['asset_beta']:.2f}")
+                b2.metric("Funding repricing beta", f"{nim_calc['funding_beta']:.2f}")
+                b3.metric("NIM spread", f"{latest.get('nim_spread', 0):.2%}")
+
+                st.markdown("### Thanh khoản và funding")
+                l1, l2, l3, l4 = responsive_cols(4)
+                l1.metric("LDR", f"{latest.get('ldr', np.nan):.2%}")
+                l2.metric("CASA ratio", f"{latest.get('casa_ratio', np.nan):.2%}")
+                l3.metric("Wholesale funding", f"{latest.get('wholesale_funding_ratio', np.nan):.2%}")
+                l4.metric("Liquidity buffer", f"{latest.get('liquidity_buffer', np.nan):.2%}")
+
+                st.markdown("### Liquidity stress")
+                st.metric("Liquidity stress score", f"{liq_score:.2f}", liquidity_status)
+                if liq_score >= 2.0:
+                    st.error("Thanh khoản chịu áp lực cao: phụ thuộc wholesale funding lớn so với liquidity buffer.")
+                elif liq_score >= 1.0:
+                    st.warning("Thanh khoản ở vùng cần theo dõi: cần kiểm soát tăng trưởng tài sản và cấu trúc huy động.")
+                else:
+                    st.success("Thanh khoản ở trạng thái ổn định theo cấu trúc dữ liệu hiện tại.")
+
+                st.markdown("### Hàm ý ALM")
+                if nim_calc['nim_impact_pct_points'] < 0:
+                    st.write("- Dự báo lãi suất hiện gây áp lực lên NIM vì funding repricing beta cao hơn asset repricing beta.")
+                    st.write("- Cần ưu tiên quản trị cost of fund, repricing gap và cơ cấu huy động.")
+                else:
+                    st.write("- Tác động NIM hiện không tiêu cực; có thể tối ưu tăng trưởng tài sản sinh lãi có chọn lọc.")
+                if liq_score >= 1.0:
+                    st.write("- Cần theo dõi liquidity buffer và tỷ trọng wholesale funding trước khi mở rộng bảng cân đối.")
+
+            with tabs[7]:
                 st.subheader("Phân tích thị trường")
-                tab_hint(7, 9)
+                tab_hint(8, 10)
                 fx_latest, fx_mean, fx_z, fx_pct = regime_signal(df['usd_vnd'])
                 ir_latest, ir_mean, ir_z, ir_pct = regime_signal(df['vibor_on'])
                 a, b, c, d = responsive_cols(4)
@@ -926,9 +1061,21 @@ if raw is not None and len(raw) > 0:
                 st.dataframe(scen, width="stretch", height=260 if mobile_mode else "auto")
                 st.caption("Bảng kịch bản cho thấy mức độ nhạy của forecast khi các driver chính bị shock và hỗ trợ đánh giá biên độ rủi ro của nhận định cơ sở.")
 
-            with tabs[7]:
+            with tabs[8]:
                 st.subheader("Khuyến nghị chiến lược")
-                tab_hint(8, 9)
+                tab_hint(9, 10)
+
+                current_alco_state = alco_state(ir_res['delta'], fx_res['delta'], liq_score, fx_pct, ir_pct)
+                st.markdown("### ALCO Action Plan")
+                if current_alco_state == "Stress":
+                    st.error("Trạng thái ALCO: Stress — ưu tiên phòng thủ rủi ro, thanh khoản và vốn.")
+                elif current_alco_state == "Watch":
+                    st.warning("Trạng thái ALCO: Watch — cần theo dõi sát và hạn chế tăng rủi ro mới.")
+                else:
+                    st.success("Trạng thái ALCO: Normal — có thể tối ưu carry và tăng trưởng có chọn lọc.")
+
+                for action in alco_action_plan(current_alco_state, ir_res['delta'], fx_res['delta'], nim_calc['nim_impact_pct_points'], liq_score):
+                    st.write(f"- {action}")
 
                 fx_up = fx_res['delta'] > 80
                 ir_up = ir_res['delta'] > 0.15
@@ -986,9 +1133,9 @@ if raw is not None and len(raw) > 0:
                 for act in actions:
                     st.write(f"- {act}")
 
-            with tabs[8]:
+            with tabs[9]:
                 st.subheader("Tổng kết")
-                tab_hint(8, 9)
+                tab_hint(10, 10)
 
                 fx_text = top_driver_text(fx_res['contrib'], 'tỷ giá')
                 ir_text = top_driver_text(ir_res['contrib'], 'lãi suất')
@@ -1029,7 +1176,13 @@ if raw is not None and len(raw) > 0:
                 else:
                     st.success("Các biến thị trường đang ở vùng trung tính hơn so với lịch sử, giúp tín hiệu forecast thuận lợi hơn cho việc sử dụng làm cơ sở định hướng điều hành.")
 
-                st.markdown("### 4. Rủi ro chính")
+                st.markdown("### 4. Tác động ALM / NIM")
+                a1, a2, a3 = responsive_cols(3)
+                a1.metric("NIM forecast", f"{nim_calc['forecast_nim']:.2%}", f"{nim_calc['nim_impact_pct_points']:+.2f} điểm %")
+                a2.metric("Liquidity stress", f"{liq_score:.2f}", liquidity_status)
+                a3.metric("ALCO state", alco_state(ir_res['delta'], fx_res['delta'], liq_score, fx_pct, ir_pct))
+
+                st.markdown("### 5. Rủi ro chính")
                 if fx_res['delta'] > 80:
                     st.write("- Áp lực tỷ giá tăng có thể làm gia tăng rủi ro đối với khách hàng nhập khẩu, khách hàng vay ngoại tệ và trạng thái ngoại tệ của ngân hàng.")
                 if ir_res['delta'] > 0.15:
@@ -1037,7 +1190,7 @@ if raw is not None and len(raw) > 0:
                 if abs(ir_res['delta']) <= 0.15 and abs(fx_res['delta']) <= 80:
                     st.write("- Chưa xuất hiện rủi ro nổi trội ở mức cao trong ngắn hạn, tuy nhiên vẫn cần tiếp tục theo dõi sát các driver chính của forecast.")
 
-                st.markdown("### 5. Khuyến nghị hành động")
+                st.markdown("### 6. Khuyến nghị hành động")
                 if ir_res['delta'] > 0.15:
                     st.write("- Kiểm soát duration danh mục đầu tư ở mức chặt chẽ hơn, hạn chế mở thêm vị thế dài nếu không có biện pháp hedge phù hợp.")
                     st.write("- Rà soát lại giả định cost of fund, repricing gap và kế hoạch bảo vệ NIM trong các kỳ điều hành tiếp theo.")
@@ -1046,7 +1199,7 @@ if raw is not None and len(raw) > 0:
                 if ir_res['delta'] <= 0.15 and fx_res['delta'] <= 80:
                     st.write("- Có thể tiếp tục tối ưu carry và cơ cấu danh mục ở mức thận trọng, đồng thời duy trì kỷ luật hạn mức rủi ro.")
 
-                st.markdown("### 6. Kết luận điều hành")
+                st.markdown("### 7. Kết luận điều hành")
                 if ir_res['delta'] > 0.15 and fx_res['delta'] > 80:
                     st.error("Bối cảnh điều hành hiện tại nghiêng về phòng thủ: cần ưu tiên kiểm soát thanh khoản, hạn mức rủi ro và trạng thái ngoại tệ.")
                 elif ir_res['delta'] > 0.15 or fx_res['delta'] > 80:
