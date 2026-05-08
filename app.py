@@ -7,7 +7,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.ensemble import RandomForestRegressor
 from streamlit_gsheets import GSheetsConnection
-from datetime import datetime
 
 # =========================================================
 # UI
@@ -47,49 +46,7 @@ def get_history_conn():
     return st.connection("gsheets_history", type=GSheetsConnection)
 
 
-def load_forecast_history(conn):
-    try:
-        hist = conn.read(ttl=0)
-        if hist is None or len(hist) == 0:
-            return pd.DataFrame()
-        return hist.dropna(how="all")
-    except Exception:
-        return pd.DataFrame()
-
-
-def get_previous_forecast_from_history(conn):
-    hist = load_forecast_history(conn)
-    if hist is None or len(hist) == 0:
-        return np.nan, np.nan
-    last = hist.iloc[-1]
-    return float(last.get("fx_forecast", np.nan)), float(last.get("ir_forecast", np.nan))
-
-
-def save_forecast_history(conn, row_dict):
-    hist = load_forecast_history(conn)
-    new_row = pd.DataFrame([row_dict])
-
-    if len(hist) > 0:
-        last = hist.iloc[-1]
-        same_snapshot = (
-            str(last.get("data_last_date", "")) == str(row_dict.get("data_last_date", ""))
-            and float(last.get("forecast_horizon", np.nan)) == float(row_dict.get("forecast_horizon", np.nan))
-            and abs(float(last.get("fx_forecast", np.nan)) - float(row_dict.get("fx_forecast", np.nan))) < 1e-9
-            and abs(float(last.get("ir_forecast", np.nan)) - float(row_dict.get("ir_forecast", np.nan))) < 1e-9
-            and str(last.get("fx_model", "")) == str(row_dict.get("fx_model", ""))
-            and str(last.get("ir_model", "")) == str(row_dict.get("ir_model", ""))
-        )
-        if same_snapshot:
-            return hist, False
-        updated = pd.concat([hist, new_row], ignore_index=True)
-    else:
-        updated = new_row
-
-    conn.update(data=updated)
-    return updated, True
-
-
-st.sidebar.caption("Dữ liệu đầu vào và lịch sử forecast đang dùng 2 Google Sheet tách biệt. Sheet lịch sử có thể để trống ban đầu; app sẽ tự append các dòng forecast mới.")
+st.sidebar.caption("Đã tắt chức năng lưu forecast history.")
 
 raw = None
 if data_mode == "Tự động từ Google Sheets":
@@ -697,12 +654,8 @@ if raw is not None and len(raw) > 0:
         ir_model_name = model_table_ir.iloc[0]['Model'] if len(model_table_ir) > 0 else "Ridge"
         fx_low, fx_high, fx_rmse = forecast_confidence_band(fx_model_name, fx_res['forecast'] if fx_res else np.nan, bt_fx)
         ir_low, ir_high, ir_rmse = forecast_confidence_band(ir_model_name, ir_res['forecast'] if ir_res else np.nan, bt_ir)
-        hist_conn = get_history_conn()
-        prev_fx_forecast, prev_ir_forecast = get_previous_forecast_from_history(hist_conn)
-        if np.isnan(prev_fx_forecast):
-            prev_fx_forecast = previous_run_forecast_proxy(df, 'fx_trend', features, forecast_horizon)
-        if np.isnan(prev_ir_forecast):
-            prev_ir_forecast = previous_run_forecast_proxy(df, 'ir_trend', features, forecast_horizon)
+        prev_fx_forecast = previous_run_forecast_proxy(df, 'fx_trend', features, forecast_horizon)
+        prev_ir_forecast = previous_run_forecast_proxy(df, 'ir_trend', features, forecast_horizon)
 
         if fx_res is None or ir_res is None:
             st.error("Dữ liệu hiện quá ngắn. Sau khi tạo lag và horizon, cần có tối thiểu khoảng 24 quan sát hữu ích.")
@@ -712,35 +665,6 @@ if raw is not None and len(raw) > 0:
             liq_score = float(latest.get('liquidity_stress', 0))
             liquidity_status = classify_liquidity_stress(liq_score)
             nim_status = classify_nim_pressure(nim_calc['nim_impact_pct_points'])
-
-            fx_latest_tmp, fx_mean_tmp, fx_z_tmp, fx_pct_tmp = regime_signal(df['usd_vnd'])
-            ir_latest_tmp, ir_mean_tmp, ir_z_tmp, ir_pct_tmp = regime_signal(df['vibor_on'])
-            current_alco_state_saved = alco_state(ir_res['delta'], fx_res['delta'], liq_score, fx_pct_tmp, ir_pct_tmp)
-
-            try:
-                forecast_history, history_saved = save_forecast_history(hist_conn, {
-                    "run_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "data_last_date": df['date'].max().strftime("%Y-%m-%d"),
-                    "forecast_horizon": forecast_horizon,
-                    "fx_forecast": fx_res['forecast'],
-                    "fx_delta": fx_res['delta'],
-                    "ir_forecast": ir_res['forecast'],
-                    "ir_delta": ir_res['delta'],
-                    "fx_model": fx_model_name,
-                    "ir_model": ir_model_name,
-                    "fx_rmse": fx_rmse,
-                    "ir_rmse": ir_rmse,
-                    "nim_forecast": nim_calc['forecast_nim'],
-                    "liquidity_stress": liq_score,
-                    "alco_state": current_alco_state_saved,
-                })
-                if history_saved:
-                    st.sidebar.success("Đã lưu forecast history")
-                else:
-                    st.sidebar.info("Forecast history không đổi, không ghi trùng")
-            except Exception as e:
-                forecast_history = pd.DataFrame()
-                st.sidebar.warning(f"Không lưu được forecast history: {e}")
 
             tabs = st.tabs([
                 "📊 Tổng quan dữ liệu",
@@ -1117,7 +1041,7 @@ if raw is not None and len(raw) > 0:
                 ch1, ch2 = responsive_cols(2)
                 ch1.metric("Thay đổi forecast FX", f"{fx_res['forecast']:,.0f}", f"{fx_res['forecast'] - prev_fx_forecast:+,.0f}" if not np.isnan(prev_fx_forecast) else "N/A")
                 ch2.metric("Thay đổi forecast IR", f"{ir_res['forecast']:.2f}%", f"{ir_res['forecast'] - prev_ir_forecast:+.2f}" if not np.isnan(prev_ir_forecast) else "N/A")
-                st.caption("So sánh này ưu tiên dùng forecast_history trong Google Sheet lịch sử; nếu chưa có dữ liệu lịch sử thì dùng proxy từ chuỗi dữ liệu trước đó.")
+                st.caption("So sánh với lần chạy trước được ước lượng bằng cách loại bỏ điểm dữ liệu mới nhất và chạy lại mô hình trên chuỗi lịch sử ngay trước đó.")
 
                 st.markdown("### Phân tích kịch bản")
                 shock_sets = {
@@ -1241,15 +1165,6 @@ if raw is not None and len(raw) > 0:
                     st.write(f"- Forecast FX thay đổi {fx_res['forecast'] - prev_fx_forecast:+,.0f} so với lần chạy trước.")
                 if not np.isnan(prev_ir_forecast):
                     st.write(f"- Forecast IR thay đổi {ir_res['forecast'] - prev_ir_forecast:+.2f} điểm so với lần chạy trước.")
-
-                if 'forecast_history' in locals() and len(forecast_history) > 1:
-                    st.markdown("### 2B. Lịch sử forecast")
-                    hist_show = forecast_history.copy().tail(20)
-                    if "run_time" in hist_show.columns:
-                        hist_show = hist_show.set_index("run_time")
-                    chart_cols = [c for c in ["fx_forecast", "ir_forecast", "nim_forecast"] if c in hist_show.columns]
-                    if len(chart_cols) > 0:
-                        st.line_chart(hist_show[chart_cols])
 
                 st.markdown("### 3. Đánh giá bối cảnh thị trường")
                 fx_latest, fx_mean, fx_z, fx_pct = regime_signal(df['usd_vnd'])
